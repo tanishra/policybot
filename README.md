@@ -1,13 +1,20 @@
 <div align="center">
 
-# PolicyBot
+<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=200&section=header&text=PolicyBot&fontSize=72&fontAlignY=35&desc=AI-powered%20outbound%20calling%20agent%20for%20insurance%20renewal%20conversations&descAlignY=55&descSize=16" width="100%" />
 
-> *AI-powered outbound calling agent for insurance renewal conversations*
+<br>
 
-![Banner](https://img.shields.io/badge/Status-Production_Ready-00C853?style=for-the-badge)
-![LiveKit](https://img.shields.io/badge/LiveKit-1.5.8-68217A?style=flat-square)
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square)
+[![LiveKit Cloud](https://img.shields.io/badge/LiveKit_Cloud-1.5.8-68217A?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptMCAxOGMtNC40MSAwLTgtMy41OS04LThzMy41OS04IDgtOCA4IDMuNTkgOCA4LTMuNTkgOC04IDh6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://livekit.cloud)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![OpenAI](https://img.shields.io/badge/OpenAI_GPT--4o--mini-412991?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com)
+[![Deepgram](https://img.shields.io/badge/Deepgram_Nova--3-13EF93?style=for-the-badge&logo=deepgram&logoColor=black)](https://deepgram.com)
+[![Sarvam AI](https://img.shields.io/badge/Sarvam_AI_Bulbul_v3-FF6F00?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptMCAxOGMtNC40MSAwLTgtMy41OS04LThzMy41OS04IDgtOCA4IDMuNTkgOCA4LTMuNTkgOC04IDh6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://sarvam.ai)
+[![Twilio](https://img.shields.io/badge/Twilio_SIP_Trunk-F22F46?style=for-the-badge&logo=twilio&logoColor=white)](https://twilio.com/en-us/sip-trunking)
+[![Silero](https://img.shields.io/badge/Silero_VAD-2D3748?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptMCAxOGMtNC40MSAwLTgtMy41OS04LThzMy41OS04IDgtOCA4IDMuNTkgOCA4LTMuNTkgOC04IDh6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://github.com/snakers4/silero-vad)
+[![Chainlit](https://img.shields.io/badge/Chainlit-FFD700?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptMCAxOGMtNC40MSAwLTgtMy41OS04LThzMy41OS04IDgtOCA4IDMuNTkgOCA4LTMuNTkgOC04IDh6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://chainlit.io)
+[![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Ruff](https://img.shields.io/badge/Ruff-3A7E9E?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptMCAxOGMtNC40MSAwLTgtMy41OS04LThzMy41OS04IDgtOCA4IDMuNTkgOCA4LTMuNTkgOC04IDh6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==)](https://docs.astral.sh/ruff)
 
 ---
 
@@ -16,8 +23,6 @@
 ## What is PolicyBot?
 
 PolicyBot is an **intelligent voice agent** that makes automated outbound calls to insurance policyholders for renewal follow-ups. It speaks natural Hindi/English (voice: *Priya*), understands customer responses in real-time, and handles the full conversation lifecycle — from greeting to payment commitment to escalation — **without human intervention**.
-
-Built on **[LiveKit Cloud](https://livekit.cloud)** with **[Twilio Elastic SIP Trunk](https://www.twilio.com/en-us/sip-trunking)** for telephony, **[Deepgram Nova-3](https://deepgram.com)** for speech recognition, **[OpenAI GPT-4o-mini](https://openai.com)** for conversation intelligence, and **[Sarvam AI Bulbul v3](https://sarvam.ai)** for natural voice synthesis.
 
 ---
 
