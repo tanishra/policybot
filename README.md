@@ -30,14 +30,14 @@ PolicyBot is an **intelligent voice agent** that makes automated outbound calls 
 
 | Capability | Detail |
 |------------|--------|
-| 📞 **Outbound Dialing** | Calls policyholders via Twilio SIP trunk with automatic DND scrubbing and retry logic |
-| 🗣️ **Natural Conversation** | Speaks Hindi/English, understands mixed-language responses, adapts tone based on sentiment |
-| 🔄 **State Machine** | Guides the call through: Identity Confirmation → Policy Narration → Payment Discussion → Closing |
-| 📊 **Smart Outcomes** | Captures promise-to-pay dates, concerns, partial payment commitments, and call-back requests |
-| 😠 **Sentiment Awareness** | Detects angry/frustrated customers and escalates to human agent |
-| 📱 **WhatsApp Integration** | Sends payment links via WhatsApp when customer commits to pay |
-| 📝 **Full Transcripts** | Logs redacted transcripts, dispositions, and recordings to database |
-| 📈 **Campaign Mode** | Batch-dials hundreds of customers from CSV with configurable concurrency |
+| **Outbound Dialing** | Calls policyholders via Twilio SIP trunk with automatic DND scrubbing and retry logic |
+| **Natural Conversation** | Speaks Hindi/English, understands mixed-language responses, adapts tone based on sentiment |
+| **State Machine** | Guides the call through: Identity Confirmation → Policy Narration → Payment Discussion → Closing |
+| **Smart Outcomes** | Captures promise-to-pay dates, concerns, partial payment commitments, and call-back requests |
+| **Sentiment Awareness** | Detects angry/frustrated customers and escalates to human agent |
+| **WhatsApp Integration** | Sends payment links via WhatsApp when customer commits to pay |
+| **Full Transcripts** | Logs redacted transcripts, dispositions, and recordings to database |
+| **Campaign Mode** | Batch-dials hundreds of customers from CSV with configurable concurrency |
 
 ---
 
@@ -45,12 +45,12 @@ PolicyBot is an **intelligent voice agent** that makes automated outbound calls 
 
 | Problem | PolicyBot Solution |
 |---------|-------------------|
-| ❌ **Missed renewals = lost revenue** | Automated follow-ups ensure every policyholder is contacted before due date |
-| 👥 **Agents spend 80% time on routine calls** | Handles 100% of first-level renewal conversations — agents only handle escalations |
-| 💸 **High agent turnover in call centers** | Zero attrition, consistent script adherence, no training required |
-| ⏰ **Can't call 1000+ customers in a day** | Concurrent dialing with smart pacing — scales to hundreds per day |
-| 📉 **No data on why customers churn** | Every call produces structured data: concern categories, sentiment, PTP dates |
-| 🌐 **Language barriers** | Fluent Hindi/English/Hinglish — matches the customer's language automatically |
+| **Missed renewals = lost revenue** | Automated follow-ups ensure every policyholder is contacted before due date |
+| **Agents spend 80% time on routine calls** | Handles 100% of first-level renewal conversations — agents only handle escalations |
+| **High agent turnover in call centers** | Zero attrition, consistent script adherence, no training required |
+| **Can't call 1000+ customers in a day** | Concurrent dialing with smart pacing — scales to hundreds per day |
+| **No data on why customers churn** | Every call produces structured data: concern categories, sentiment, PTP dates |
+| **Language barriers** | Fluent Hindi/English/Hinglish — matches the customer's language automatically |
 
 ---
 
