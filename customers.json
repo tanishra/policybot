@@ -1,0 +1,50 @@
+{
+  "+919690190921": {
+    "customer_name": "Rahul Sharma",
+    "policy_number": "POL-2024-78901",
+    "plan_name": "LIC Jeevan Labh",
+    "due_amount": "25000",
+    "due_date": "2026-06-15",
+    "policy_purchase_date": "2021-03-10",
+    "policy_term_years": "15",
+    "sum_assured": "500000",
+    "premium_frequency": "Yearly",
+    "last_payment_date": "2025-03-10",
+    "payment_method": "Auto-debit from HDFC Bank",
+    "email": "rahul.sharma@email.com",
+    "agent_name": "Sunil Verma",
+    "branch": "Mumbai Andheri"
+  },
+  "+919548999767": {
+    "customer_name": "Amit Patel",
+    "policy_number": "POL-2024-45678",
+    "plan_name": "HDFC Life Click 2 Invest",
+    "due_amount": "35000",
+    "due_date": "2026-05-30",
+    "policy_purchase_date": "2020-11-20",
+    "policy_term_years": "20",
+    "sum_assured": "1000000",
+    "premium_frequency": "Yearly",
+    "last_payment_date": "2025-11-20",
+    "payment_method": "Credit Card",
+    "email": "amit.patel@email.com",
+    "agent_name": "Priya Mehta",
+    "branch": "Ahmedabad Satellite"
+  },
+  "+919876543210": {
+    "customer_name": "Priya Singh",
+    "policy_number": "POL-2025-12345",
+    "plan_name": "ICICI Pru iProtect Smart",
+    "due_amount": "18000",
+    "due_date": "2026-07-01",
+    "policy_purchase_date": "2023-01-15",
+    "policy_term_years": "10",
+    "sum_assured": "750000",
+    "premium_frequency": "Half-Yearly",
+    "last_payment_date": "2025-07-01",
+    "payment_method": "NEFT",
+    "email": "priya.singh@email.com",
+    "agent_name": "Rajesh Kumar",
+    "branch": "Delhi Connaught Place"
+  }
+}

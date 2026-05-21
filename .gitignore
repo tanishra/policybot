@@ -1,0 +1,55 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+poetry.lock
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Runtime
+*.pid
+*.pid.lock
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# SQLite (local dev only — prod uses PG)
+*.db
+*.sqlite3
+
+# Ruff / mypy cache
+.ruff_cache/
+.mypy_cache/
+
+.chainlit
+.db
+Renewal Voice Bot PRD_v0.1.pdf
+requirements.md
+ARCHITECTURE.md
+client_requirements.md
+run.py
+test.py
+ui.py

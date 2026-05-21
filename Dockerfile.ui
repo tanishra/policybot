@@ -1,0 +1,23 @@
+# Renewal Voice Bot - UI Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for Chainlit
+RUN apt-get update && apt-get install -y \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY ui/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY ui/ .
+
+# Expose UI port
+EXPOSE 8001
+
+# Run the UI
+CMD ["chainlit", "run", "app.py", "--port", "8001", "--host", "0.0.0.0"]
