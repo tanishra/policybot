@@ -19,6 +19,7 @@ import logger as db_logger
 from agents.orchestrator import ConversationState
 from agents.instructions import compose_instructions_obj
 from agents.dispatcher import create_outcome
+from agents.concern import ConcernCategory, coerce_concern_category
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -92,10 +93,12 @@ class RenewalAssistant(Agent):
         return f"Payment date '{expected_date}' recorded. Say you are sending payment link via WhatsApp and say goodbye."
 
     @function_tool()
-    async def categorize_concern(self, context: RunContext, concern_category: str, user_quote: str) -> str:
-        logger.info(f"categorize_concern — category={concern_category}, quote={user_quote}")
+    async def categorize_concern(self, context: RunContext, concern_category: ConcernCategory, user_quote: str, confidence: float = 1.0) -> str:
+        coerced_cat, coerced_conf = coerce_concern_category(concern_category, confidence, user_quote)
+        logger.info(f"categorize_concern — category={concern_category} confidence={confidence} -> coerced={coerced_cat}")
         self.outcome["disposition"] = "Concern Captured"
-        self.outcome["concern_cat"] = concern_category
+        self.outcome["concern_cat"] = coerced_cat
+        self.outcome["concern_confidence"] = coerced_conf
         self.outcome["concern_notes"] = user_quote
         await self._transition_state(ConversationState.CLOSING)
         return "Concern noted. Show empathy, say the team will follow up, and say goodbye."
@@ -357,6 +360,7 @@ async def my_agent(ctx: agents.JobContext):
             disposition=assistant.outcome["disposition"],
             promise_to_pay_date=assistant.outcome["ptp_date"],
             concern_category=assistant.outcome["concern_cat"],
+            concern_confidence=assistant.outcome["concern_confidence"],
             concern_notes=assistant.outcome["concern_notes"],
             alt_number=assistant.outcome["alt_number"],
             detected_language=assistant.outcome["detected_language"],

@@ -1,9 +1,73 @@
+from typing import Literal
+
+CONCERN_CATEGORY_VALUES = [
+    "Financial Problem",
+    "Mis-selling",
+    "Product Misunderstanding",
+    "Better Investment Available",
+    "Lower Returns",
+    "Wants to Surrender",
+    "Deferred Payment Request",
+    "Refusal to Pay",
+    "Long Investment Period",
+    "Reduced Paid-Up Preference",
+    "Other",
+]
+
+ConcernCategory = Literal[
+    "Financial Problem",
+    "Mis-selling",
+    "Product Misunderstanding",
+    "Better Investment Available",
+    "Lower Returns",
+    "Wants to Surrender",
+    "Deferred Payment Request",
+    "Refusal to Pay",
+    "Long Investment Period",
+    "Reduced Paid-Up Preference",
+    "Other",
+]
+
+CONFIDENCE_THRESHOLD = 0.7
+
+
+def coerce_concern_category(
+    category: str,
+    confidence: float = 1.0,
+    user_quote: str = "",
+) -> tuple[str, float]:
+    if confidence < CONFIDENCE_THRESHOLD:
+        return "Other", confidence
+    if category in CONCERN_CATEGORY_VALUES:
+        return category, confidence
+    return "Other", confidence
+
+
 def build_concern_instructions() -> str:
-    return """
+    taxonomy_bullets = "\n".join(f"    - {c}" for c in CONCERN_CATEGORY_VALUES)
+    return f"""
     CONCERN HANDLING:
-    - Listen to the user's concern.
-    - Categorize using the categorize_concern tool.
-    - Show empathy.
+    - Listen to the user's concern about their policy/renewal.
+    - Categorize using the categorize_concern tool with the EXACT category from the taxonomy below.
+    - Always output a confidence score (0.0 to 1.0) indicating how sure you are of the category.
+    - If confidence is below {CONFIDENCE_THRESHOLD}, the system auto-classifies as "Other".
+    - Show empathy before calling the tool.
+
+    CONCERN TAXONOMY (use EXACT match):
+{taxonomy_bullets}
+
+    CATEGORY GUIDE:
+    - Financial Problem: "no money", "tight budget", "can't afford", "expenses"
+    - Mis-selling: "agent lied", "wasn't told about this", "misled", "wrong information"
+    - Product Misunderstanding: "thought it was different", "didn't know about charges"
+    - Better Investment Available: "found better plan", "switching to another company"
+    - Lower Returns: "returns are too low", "not getting enough", "poor returns"
+    - Wants to Surrender: "want to close", "cancel my policy", "surrender"
+    - Deferred Payment Request: "pay later", "extension", "delay", "next month"
+    - Refusal to Pay: "won't pay", "not paying", "refuse to renew", "no"
+    - Long Investment Period: "too long", "many years", "can't wait that long"
+    - Reduced Paid-Up Preference: "make paid-up", "stop paying but keep policy"
+    - Other: anything that doesn't clearly fit above categories
     """
 
 
