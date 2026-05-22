@@ -1,0 +1,26 @@
+{
+    "prohibited_patterns": [
+        "guaranteed return",
+        "guaranteed returns",
+        "assured return",
+        "assured returns",
+        "risk-free",
+        "risk free",
+        "better than",
+        "best policy",
+        "never lose money",
+        "guaranteed profit",
+        "guaranteed profits",
+        "fixed income",
+        "100% safe",
+        "hundred percent safe",
+        "no risk",
+        "zero risk",
+        "guaranteed",
+        "sure shot"
+    ],
+    "required_disclosures": [
+        "caller identification",
+        "purpose of call"
+    ]
+}
