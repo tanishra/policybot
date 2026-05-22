@@ -10,9 +10,13 @@ import os
 import socket
 import asyncio
 from collections import deque
+
+# Patch heartbeat BEFORE any livekit import to prevent LB idle timeout
+import livekit.agents.worker as _lk_worker
+_lk_worker.HEARTBEAT_INTERVAL = 15
+
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext, JobProcess, JobExecutorType
-from livekit.agents.llm import ChatRole
 from livekit.plugins import silero, openai, deepgram, sarvam, elevenlabs
 
 import logger as db_logger
@@ -20,6 +24,7 @@ from agents.orchestrator import ConversationState
 from agents.instructions import compose_instructions_obj
 from agents.dispatcher import create_outcome
 from agents.concern import ConcernCategory, coerce_concern_category
+from agents.compliance import compliance_check
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -72,8 +77,23 @@ class RenewalAssistant(Agent):
     @function_tool()
     async def confirm_right_party(self, context: RunContext) -> str:
         logger.info(f"confirm_right_party — {self.metadata.get('name')} confirmed")
+        await self._transition_state(ConversationState.CONSENT)
+        return "Identity confirmed. Ask for recording consent before sharing policy details."
+
+    @function_tool()
+    async def grant_recording_consent(self, context: RunContext) -> str:
+        logger.info("grant_recording_consent — consent given")
+        self.outcome["recording_consent"] = "Yes"
         await self._transition_state(ConversationState.NARRATION)
-        return f"Identity confirmed. Share policy details with {self.metadata.get('name')}."
+        return f"Recording consent granted. Share policy details with {self.metadata.get('name')}."
+
+    @function_tool()
+    async def deny_recording_consent(self, context: RunContext) -> str:
+        logger.info("deny_recording_consent — consent denied")
+        self.outcome["recording_consent"] = "No"
+        self.outcome["disposition"] = "Consent Denied"
+        await self._transition_state(ConversationState.CLOSING)
+        return "Recording consent denied. Politely say goodbye and end the call."
 
     @function_tool()
     async def fail_right_party(self, context: RunContext, alternate_number_provided: str = None) -> str:
@@ -147,9 +167,63 @@ server = AgentServer(
     api_secret=os.getenv("LIVEKIT_API_SECRET"),
     job_executor_type=JobExecutorType.THREAD,
     setup_fnc=_prewarm_setup,
+    max_retry=64,
 )
 
 _roundtrip_times = deque(maxlen=20)
+
+
+def _init_tts():
+    legacy = os.getenv("TTS_PROVIDER")
+    fallback = os.getenv("TTS_FALLBACK")
+    if legacy and not fallback:
+        order = [legacy]
+    else:
+        order = (fallback or "sarvam,elevenlabs,deepgram").split(",")
+    errors = []
+
+    for name in order:
+        name = name.strip().lower()
+        try:
+            if name == "sarvam":
+                tts = sarvam.TTS(
+                    model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
+                    speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
+                    target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
+                    pace=float(os.getenv("TTS_PACE", "1.2")),
+                    temperature=0.5,
+                    min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
+                    max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
+                    api_key=os.getenv("SARVAM_API_KEY"),
+                )
+                logger.info("TTS: Sarvam Bulbul v3")
+                return tts
+
+            elif name == "elevenlabs":
+                key = os.getenv("ELEVENLABS_API_KEY", "")
+                if not key:
+                    raise RuntimeError("ELEVENLABS_API_KEY not set")
+                tts = elevenlabs.TTS(
+                    model=os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
+                    voice_id=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+                    api_key=key,
+                )
+                logger.info(f"TTS: ElevenLabs (voice_id={os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')})")
+                return tts
+
+            elif name == "deepgram":
+                tts = deepgram.TTS(
+                    model=os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-andromeda-en"),
+                    api_key=os.getenv("DEEPGRAM_API_KEY"),
+                )
+                logger.info("TTS: Deepgram Aura")
+                return tts
+
+        except Exception as e:
+            logger.warning(f"TTS {name} failed: {e}")
+            errors.append(f"{name}: {e}")
+
+    raise RuntimeError(f"No working TTS provider. Tried: {', '.join(order)}. Errors: {', '.join(errors)}")
 
 
 @server.rtc_session(agent_name="priya")
@@ -190,36 +264,13 @@ async def my_agent(ctx: agents.JobContext):
         api_key=os.getenv("OPENAI_API_KEY"),
     )
 
-    tts_provider = os.getenv("TTS_PROVIDER", "sarvam")
-
-    if tts_provider == "elevenlabs":
-        elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
-        if not elevenlabs_key:
-            raise RuntimeError("ELEVENLABS_API_KEY not set in .env")
-        tts_model = elevenlabs.TTS(
-            model=os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
-            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
-            api_key=elevenlabs_key,
-        )
-        logger.info(f"TTS: using ElevenLabs (voice_id={os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')})")
-    else:
-        tts_model = sarvam.TTS(
-            model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
-            speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
-            target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
-            pace=float(os.getenv("TTS_PACE", "1.2")),
-            temperature=0.5,
-            min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
-            max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
-            api_key=os.getenv("SARVAM_API_KEY"),
-        )
-        logger.info("TTS: using Sarvam Bulbul v3")
-
+    tts_model = _init_tts()
     vad_model = silero.VAD.load()
     tts_model.prewarm()
     logger.info("AI pipeline ready (STT + LLM + TTS + VAD, prewarmed)")
 
     amd = {"human_detected": False, "should_end": False}
+    compliance_violations = 0
 
     try:
         session = AgentSession(
@@ -294,10 +345,18 @@ async def my_agent(ctx: agents.JobContext):
         return
 
     name = metadata.get("name", "Customer")
-    greeting_text = f"नमस्ते, मैं रिन्यूअल टीम से प्रिया बोल रही हूँ। क्या मेरी बात {name} जी से हो रही है?"
+    greeting_text = (
+        f"नमस्ते, मैं Fairvalue Insuretech प्राइवेट लिमिटेड की तरफ से "
+        f"आपकी इंश्योरेंस पॉलिसी रिन्यूअल के बारे में बात कर रही हूँ। "
+        f"क्या मेरी बात {name} जी से हो रही है?"
+    )
     t0 = time.time()
+    passed, violation, safe_text = compliance_check(greeting_text)
+    if not passed:
+        compliance_violations += 1
+        logger.warning(f"[COMPLIANCE] Greeting violation: {violation}")
     try:
-        await session.say(text=greeting_text, allow_interruptions=True)
+        await session.say(text=safe_text, allow_interruptions=True)
         logger.info(f"[TIMING] Greeting sent in {time.time() - t0:.2f}s")
     except Exception as e:
         logger.error(f"say() failed: {e}")
@@ -328,6 +387,7 @@ async def my_agent(ctx: agents.JobContext):
 
     avg_rt = sum(_roundtrip_times) / len(_roundtrip_times) if _roundtrip_times else 0
     logger.info(f"[TIMING] AVG round-trip: {avg_rt:.2f}s over {len(_roundtrip_times)} turns")
+    logger.info(f"[COMPLIANCE] Violations: {compliance_violations}")
 
     raw_transcript = ""
     try:
@@ -345,8 +405,21 @@ async def my_agent(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"Transcript build error: {e}")
 
-    safe_transcript = re.sub(r'\+?\b\d{10,12}\b', "[REDACTED]", raw_transcript)
-    safe_transcript = re.sub(r'\bPOL-\d+\b', "[REDACTED]", safe_transcript)
+    PII_PATTERNS = [
+        (r'\+?\b\d{10,12}\b', "[REDACTED]"),              # phone numbers
+        (r'\bPOL-\d+\b', "[REDACTED]"),                    # policy numbers
+        (r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', "[REDACTED]"),     # PAN
+        (r'\b\d{4}\s?\d{4}\s?\d{4}\b', "[REDACTED]"),     # Aadhaar
+        (r'\b\d{9,18}\b', "[REDACTED]"),                   # bank accounts
+    ]
+
+    def redact_pii(text: str) -> str:
+        for pattern, replacement in PII_PATTERNS:
+            text = re.sub(pattern, replacement, text)
+        return text
+
+    safe_transcript = redact_pii(raw_transcript)
+    safe_concern_notes = redact_pii(assistant.outcome.get("concern_notes") or "")
 
     recording_url = os.getenv("LIVEKIT_RECORDING_URL", "")
 
@@ -361,7 +434,7 @@ async def my_agent(ctx: agents.JobContext):
             promise_to_pay_date=assistant.outcome["ptp_date"],
             concern_category=assistant.outcome["concern_cat"],
             concern_confidence=assistant.outcome["concern_confidence"],
-            concern_notes=assistant.outcome["concern_notes"],
+            concern_notes=safe_concern_notes,
             alt_number=assistant.outcome["alt_number"],
             detected_language=assistant.outcome["detected_language"],
             sentiment=assistant.outcome["sentiment"],
@@ -369,6 +442,7 @@ async def my_agent(ctx: agents.JobContext):
             emi_option=assistant.outcome["emi_option"],
             call_back_time=assistant.outcome["call_back_time"],
             transcript=safe_transcript,
+            recording_consent=assistant.outcome.get("recording_consent"),
             recording_url=recording_url,
         )
         logger.info("Call record saved")

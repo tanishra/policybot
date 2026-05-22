@@ -71,6 +71,20 @@ def build_concern_instructions() -> str:
     """
 
 
+def build_consent_instructions() -> str:
+    return """
+    CURRENT STATE: Recording Consent
+
+    YOUR JOB:
+    1. The user has confirmed their identity.
+    2. Ask: "This call is being recorded for quality and training purposes. Is that okay?"
+    3. Wait for their response.
+    4. If they say YES (or equivalent) -> call grant_recording_consent tool.
+    5. If they say NO (or equivalent) -> call deny_recording_consent tool.
+    6. Do NOT discuss policy details until consent is granted.
+    """
+
+
 def build_partial_payment_instructions() -> str:
     return """
     CURRENT STATE: Partial Payment / EMI

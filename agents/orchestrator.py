@@ -1,5 +1,6 @@
 class ConversationState:
     INTRO = "intro"
+    CONSENT = "consent"
     NARRATION = "narration"
     FEASIBILITY = "feasibility"
     PARTIAL_PAYMENT = "partial_payment"
@@ -10,6 +11,10 @@ class ConversationState:
 
 VALID_TRANSITIONS = {
     ConversationState.INTRO: [
+        ConversationState.CONSENT,
+        ConversationState.CLOSING,
+    ],
+    ConversationState.CONSENT: [
         ConversationState.NARRATION,
         ConversationState.CLOSING,
     ],

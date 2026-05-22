@@ -6,6 +6,7 @@ from .policy_narration import build_customer_block, build_narration_instructions
 from .intent import build_intent_instructions
 from .concern import (
     build_concern_instructions,
+    build_consent_instructions,
     build_partial_payment_instructions,
     build_call_back_instructions,
     build_escalation_instructions,
@@ -55,6 +56,7 @@ def _dtmf_instructions() -> str:
 
 STATE_BUILDERS = {
     ConversationState.INTRO: lambda: build_rpc_instructions(),
+    ConversationState.CONSENT: lambda: build_consent_instructions(),
     ConversationState.NARRATION: lambda: build_narration_instructions() + build_concern_instructions(),
     ConversationState.FEASIBILITY: lambda: build_intent_instructions() + build_concern_instructions(),
     ConversationState.PARTIAL_PAYMENT: lambda: build_partial_payment_instructions(),

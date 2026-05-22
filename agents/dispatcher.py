@@ -10,6 +10,7 @@ OUTCOME_DEFAULTS = {
     "partial_amount": None,
     "emi_option": None,
     "call_back_time": None,
+    "recording_consent": None,
 }
 
 
