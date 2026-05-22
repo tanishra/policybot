@@ -13,7 +13,7 @@ from collections import deque
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext, JobProcess, JobExecutorType
 from livekit.agents.llm import ChatRole
-from livekit.plugins import silero, openai, deepgram, sarvam
+from livekit.plugins import silero, openai, deepgram, sarvam, elevenlabs
 
 import logger as db_logger
 from agents.orchestrator import ConversationState
@@ -187,16 +187,30 @@ async def my_agent(ctx: agents.JobContext):
         api_key=os.getenv("OPENAI_API_KEY"),
     )
 
-    tts_model = sarvam.TTS(
-        model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
-        speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
-        target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
-        pace=float(os.getenv("TTS_PACE", "1.2")),
-        temperature=0.5,
-        min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
-        max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
-        api_key=os.getenv("SARVAM_API_KEY"),
-    )
+    tts_provider = os.getenv("TTS_PROVIDER", "sarvam")
+
+    if tts_provider == "elevenlabs":
+        elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
+        if not elevenlabs_key:
+            raise RuntimeError("ELEVENLABS_API_KEY not set in .env")
+        tts_model = elevenlabs.TTS(
+            model=os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
+            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            api_key=elevenlabs_key,
+        )
+        logger.info(f"TTS: using ElevenLabs (voice_id={os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')})")
+    else:
+        tts_model = sarvam.TTS(
+            model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
+            speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
+            target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
+            pace=float(os.getenv("TTS_PACE", "1.2")),
+            temperature=0.5,
+            min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
+            max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
+            api_key=os.getenv("SARVAM_API_KEY"),
+        )
+        logger.info("TTS: using Sarvam Bulbul v3")
 
     vad_model = silero.VAD.load()
     tts_model.prewarm()
@@ -210,11 +224,20 @@ async def my_agent(ctx: agents.JobContext):
             llm=openai_llm,
             tts=tts_model,
             vad=vad_model,
-            turn_detection="stt",
-            preemptive_generation=True,
-            min_endpointing_delay=float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
-            max_endpointing_delay=float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
-            min_interruption_duration=float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
+            turn_handling={
+                "turn_detection": "stt",
+                "endpointing": {
+                    "min_delay": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
+                    "max_delay": float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
+                },
+                "interruption": {
+                    "mode": "vad",
+                    "min_duration": float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
+                },
+                "preemptive_generation": {
+                    "enabled": True,
+                },
+            },
         )
 
         assistant = RenewalAssistant(metadata=metadata)
