@@ -13,6 +13,9 @@ import time
 import uuid
 from collections import defaultdict
 from datetime import datetime
+import aiohttp
+import ssl
+import certifi
 from dotenv import load_dotenv
 from livekit import api
 import logging
@@ -20,6 +23,18 @@ import logging
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
+
+# macOS Python 3.13 fix: use certifi's CA bundle for SSL verification
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+_LK_SESSION: aiohttp.ClientSession | None = None
+
+
+async def _get_lk_session() -> aiohttp.ClientSession:
+    global _LK_SESSION
+    if _LK_SESSION is None:
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        _LK_SESSION = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+    return _LK_SESSION
 
 # Load customer database
 CUSTOMER_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "customers.json")
@@ -179,7 +194,8 @@ async def initiate_outbound_call(
     logger.info(f"Call metadata: {json.dumps(metadata, indent=2)}")
 
     try:
-        livekit_api = api.LiveKitAPI(url, api_key, api_secret)
+        lk_session = await _get_lk_session()
+        livekit_api = api.LiveKitAPI(url, api_key, api_secret, session=lk_session)
 
         await livekit_api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
@@ -192,17 +208,31 @@ async def initiate_outbound_call(
         )
         logger.info(f"SIP participant created for {mobile_number} in room {room_name}")
 
-        try:
-            await livekit_api.agent_dispatch.create_dispatch(
-                api.CreateAgentDispatchRequest(
-                    agent_name="priya",
-                    room=room_name,
-                    metadata=metadata_str,
+        # ── Agent Dispatch with retry ────────────────────────────────────
+        # Dispatch may fail if agent hasn't registered yet. Retry with backoff.
+        max_dispatch_retries = 5
+        dispatch_delay = 2.0
+        dispatched = False
+        for attempt in range(1, max_dispatch_retries + 1):
+            try:
+                if attempt > 1:
+                    await asyncio.sleep(dispatch_delay)
+                    dispatch_delay = min(dispatch_delay * 1.5, 10.0)
+                await livekit_api.agent_dispatch.create_dispatch(
+                    api.CreateAgentDispatchRequest(
+                        agent_name="priya",
+                        room=room_name,
+                        metadata=metadata_str,
+                    )
                 )
-            )
-            logger.info(f"Agent 'priya' dispatched to room {room_name}")
-        except Exception as e:
-            logger.warning(f"Failed to dispatch agent: {e}")
+                logger.info(f"Agent 'priya' dispatched to room {room_name}")
+                dispatched = True
+                break
+            except Exception as e:
+                logger.warning(f"Dispatch attempt {attempt}/{max_dispatch_retries} failed: {e}")
+
+        if not dispatched:
+            logger.error(f"Failed to dispatch agent after {max_dispatch_retries} attempts")
 
         await livekit_api.aclose()
         logger.info(f"Call initiated: {call_id} to {mobile_number}")
@@ -384,7 +414,8 @@ async def get_recording_url(room_name: str):
         raise HTTPException(status_code=500, detail="LiveKit not configured")
 
     try:
-        lk_api = api.LiveKitAPI(url, api_key, api_secret)
+        lk_session = await _get_lk_session()
+        lk_api = api.LiveKitAPI(url, api_key, api_secret, session=lk_session)
         egress = await lk_api.egress.list_egress(
             api.ListEgressRequest(room_name=room_name)
         )

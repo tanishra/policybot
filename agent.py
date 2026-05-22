@@ -1,21 +1,50 @@
+import certifi
+import ctypes
+import ctypes.util
 from dotenv import load_dotenv
 import logging
 import json
 import time
 import re
 import os
+import socket
 import asyncio
 from collections import deque
 from livekit import agents, rtc
-from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext
+from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext, JobProcess, JobExecutorType
 from livekit.agents.llm import ChatRole
-from livekit.plugins import silero, openai, deepgram, sarvam, azure
+from livekit.agents.llm.chat_context import Instructions
+from livekit.plugins import silero, openai, deepgram, sarvam
 
 import logger as db_logger
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("renewal-bot")
+
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
+# macOS: spawned child processes inherit a stale DNS resolver state from the
+# parent.  Calling libc's res_init() re-reads /etc/resolv.conf so that the
+# Rust livekit-ffi layer can resolve LiveKit Cloud hostnames.
+def _reinit_resolver() -> None:
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        libc.res_init()
+    except Exception:
+        pass
+
+def _prewarm_setup(proc: JobProcess) -> None:
+    _reinit_resolver()
+    host = (os.getenv("LIVEKIT_URL") or "").replace("wss://", "").replace("https://", "")
+    if not host:
+        return
+    try:
+        socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+        socket.getaddrinfo(host, 443, socket.AF_INET6, socket.SOCK_STREAM)
+        logger.info(f"DNS prewarmed: {host}")
+    except Exception as e:
+        logger.warning(f"DNS prewarm failed: {e}")
 
 REQUIRED_ENV_VARS = [
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
@@ -53,7 +82,7 @@ class RenewalAssistant(Agent):
             "sentiment": None,
         }
         super().__init__(
-            instructions=self.get_instructions_for_state(ConversationState.INTRO),
+            instructions=Instructions(audio=self.get_instructions_for_state(ConversationState.INTRO)),
             **kwargs
         )
 
@@ -185,7 +214,7 @@ class RenewalAssistant(Agent):
 
     async def _transition_state(self, new_state: str):
         self.state = new_state
-        await self.update_instructions(self.get_instructions_for_state(self.state))
+        await self.update_instructions(Instructions(audio=self.get_instructions_for_state(self.state)))
 
     # ── Tools: Identity ───────────────────────────────────────────────────
 
@@ -274,6 +303,8 @@ server = AgentServer(
     ws_url=os.getenv("LIVEKIT_URL"),
     api_key=os.getenv("LIVEKIT_API_KEY"),
     api_secret=os.getenv("LIVEKIT_API_SECRET"),
+    job_executor_type=JobExecutorType.THREAD,
+    setup_fnc=_prewarm_setup,
 )
 
 # ── Timing ───────────────────────────────────────────────────────────────────
@@ -470,10 +501,10 @@ async def my_agent(ctx: agents.JobContext):
             customer_name=metadata.get("name"),
             mobile_number=metadata.get("mobile_number"),
             policy_number=metadata.get("policy_number"),
-            status="Completed",
+            call_status="Completed",
             duration=duration,
             disposition=assistant.outcome["disposition"],
-            ptp_date=assistant.outcome["ptp_date"],
+            promise_to_pay_date=assistant.outcome["ptp_date"],
             concern_category=assistant.outcome["concern_cat"],
             concern_notes=assistant.outcome["concern_notes"],
             alt_number=assistant.outcome["alt_number"],
