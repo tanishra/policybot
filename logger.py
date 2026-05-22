@@ -10,6 +10,14 @@ DB_PATH = "dispositions.db"
 _executor = ThreadPoolExecutor(max_workers=2)
 _init_done = False
 
+MIGRATIONS = [
+    "ALTER TABLE call_logs ADD COLUMN concern_confidence REAL",
+    "ALTER TABLE call_logs ADD COLUMN partial_amount TEXT",
+    "ALTER TABLE call_logs ADD COLUMN emi_option TEXT",
+    "ALTER TABLE call_logs ADD COLUMN call_back_time TEXT",
+]
+
+
 def _sync_init():
     global _init_done
     if _init_done:
@@ -27,6 +35,7 @@ def _sync_init():
             disposition TEXT,
             promise_to_pay_date TEXT,
             concern_category TEXT,
+            concern_confidence REAL,
             concern_notes TEXT,
             alt_number TEXT,
             detected_language TEXT,
@@ -38,6 +47,11 @@ def _sync_init():
             recording_url TEXT
         )
     """)
+    for stmt in MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except Exception:
+            pass
     conn.commit()
     conn.close()
     _init_done = True
