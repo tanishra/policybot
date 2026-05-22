@@ -183,6 +183,10 @@ Customer Speech ──► Deepgram Nova-3 ──► OpenAI GPT-4o-mini ──►
 
 ---
 
+## Environment Variables
+
+Copy `.env.example` to `.env`, edit the values. Required: LiveKit Cloud credentials, OpenAI key, Deepgram key, Sarvam key, and SIP trunk details (DID, domain, username, password). All other vars have sensible defaults — see `.env.example` for the full list.
+
 ## Quick Start
 
 ```bash
@@ -205,11 +209,11 @@ docker compose up -d --build
 
 Contributions are welcome! Here's how you can help:
 
-- 🐛 **Report bugs** — Open a GitHub issue with logs and steps to reproduce
-- 💡 **Suggest features** — Open a feature request with a clear use case
-- 🔧 **Submit PRs** — Fork the repo, make your changes, and open a pull request
-- 📖 **Improve docs** — Fix typos, add examples, clarify instructions
-- 🌐 **Add languages** — Help extend support to Tamil, Telugu, Bengali, or other Indian languages
+- **Report bugs** — Open a GitHub issue with logs and steps to reproduce
+- **Suggest features** — Open a feature request with a clear use case
+- **Submit PRs** — Fork the repo, make your changes, and open a pull request
+- **Improve docs** — Fix typos, add examples, clarify instructions
+- **Add languages** — Help extend support to Tamil, Telugu, Bengali, or other Indian languages
 
 Before contributing, please:
 1. Check existing issues to avoid duplication

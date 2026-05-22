@@ -13,10 +13,12 @@ from collections import deque
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext, JobProcess, JobExecutorType
 from livekit.agents.llm import ChatRole
-from livekit.agents.llm.chat_context import Instructions
-from livekit.plugins import silero, openai, deepgram, sarvam
+from livekit.plugins import silero, openai, deepgram, sarvam, elevenlabs
 
 import logger as db_logger
+from agents.orchestrator import ConversationState
+from agents.instructions import compose_instructions_obj
+from agents.dispatcher import create_outcome
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -24,9 +26,6 @@ logger = logging.getLogger("renewal-bot")
 
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
-# macOS: spawned child processes inherit a stale DNS resolver state from the
-# parent.  Calling libc's res_init() re-reads /etc/resolv.conf so that the
-# Rust livekit-ffi layer can resolve LiveKit Cloud hostnames.
 def _reinit_resolver() -> None:
     try:
         libc = ctypes.CDLL(ctypes.util.find_library("c"))
@@ -55,168 +54,19 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 
-class ConversationState:
-    INTRO = "intro"
-    NARRATION = "narration"
-    FEASIBILITY = "feasibility"
-    PARTIAL_PAYMENT = "partial_payment"
-    CALL_BACK = "call_back"
-    ESCALATION = "escalation"
-    CLOSING = "closing"
-
-
 class RenewalAssistant(Agent):
     def __init__(self, metadata: dict, **kwargs) -> None:
         self.metadata = metadata
         self.state = ConversationState.INTRO
-        self.outcome = {
-            "disposition": "No Response",
-            "ptp_date": None,
-            "concern_cat": None,
-            "concern_notes": None,
-            "alt_number": None,
-            "partial_amount": None,
-            "emi_option": None,
-            "call_back_time": None,
-            "detected_language": None,
-            "sentiment": None,
-        }
+        self.outcome = create_outcome()
         super().__init__(
-            instructions=Instructions(audio=self.get_instructions_for_state(ConversationState.INTRO)),
+            instructions=compose_instructions_obj(ConversationState.INTRO, metadata),
             **kwargs
         )
 
-    # ── Instructions Builder ──────────────────────────────────────────────
-
-    def _guardrails(self) -> str:
-        return """
-        GUARDRAILS:
-        - You are Priya, a polite insurance renewal assistant.
-        - NEVER give financial advice.
-        - NEVER promise guaranteed returns.
-        - Respond concisely in a sweet, conversational Indian tone.
-        - Match the user's language (Hindi, English, or Hinglish).
-        - You can answer any policy questions at any point.
-        - The conversation must flow naturally through the states.
-        """
-
-    def _customer_block(self) -> str:
-        m = self.metadata
-        return f"""
-        CUSTOMER DETAILS:
-          Name: {m.get('name')}
-          Policy: {m.get('policy_number')} | Plan: {m.get('plan_name')}
-          Premium Due: Rs. {m.get('due_amount')} | Due Date: {m.get('due_date')}
-          Policy Started: {m.get('policy_purchase_date')} | Term: {m.get('policy_term_years')} years
-          Sum Assured: Rs. {m.get('sum_assured')}
-          Premium Frequency: {m.get('premium_frequency')}
-          Last Payment: {m.get('last_payment_date')} via {m.get('payment_method')}
-          Agent: {m.get('agent_name')} | Branch: {m.get('branch')}
-          Email: {m.get('email')}
-        """
-
-    def _sentiment_instructions(self) -> str:
-        return """
-        SENTIMENT AWARENESS:
-        - Continuously assess the user's sentiment from their tone and words.
-        - If they sound angry, frustrated, or aggressive, call request_escalation tool immediately (do NOT try to sell further).
-        - If neutral or happy, continue normally.
-        - Call detect_sentiment tool at state transitions to record the sentiment.
-        """
-
-    def _language_instructions(self) -> str:
-        return """
-        LANGUAGE DETECTION:
-        - Detect the user's primary language (Hindi / English / Hinglish) from their speech.
-        - Respond in the same language they use.
-        - Call detect_language tool once confident.
-        """
-
-    def _dtmf_instructions(self) -> str:
-        return """
-        DTMF / KEYPAD HANDLING:
-        - If the user says they pressed a key (e.g., "main ne 1 daba diya") or you hear tones:
-          Treat 1 = Yes / Confirm, 2 = No / Decline, 3 = Call me back, 0 = Talk to agent.
-        - Ask "Press 1 to confirm" when you need clear confirmation.
-        """
-
-    def _state_tag(self, state: str, job: str) -> str:
-        return f"""
-        CURRENT STATE: {state}
-        YOUR JOB: {job}
-        """
-
-    def get_instructions_for_state(self, state: str) -> str:
-        base = self._guardrails() + self._customer_block()
-        base += self._sentiment_instructions()
-        base += self._language_instructions()
-        base += self._dtmf_instructions()
-
-        if state == ConversationState.INTRO:
-            return base + self._state_tag("Introduction", """
-            NOTE: You have already greeted the user. Do NOT greet again.
-            1. Wait for the user to confirm their identity.
-            2. If they confirm -> call confirm_right_party tool.
-            3. If wrong number -> call fail_right_party tool.
-            4. Do NOT reveal policy details yet.
-            Answer any question the user asks.
-            """)
-
-        elif state == ConversationState.NARRATION:
-            return base + self._state_tag("Policy Narration", """
-            1. Tell the user about their policy: plan name, policy number, premium, due date.
-            2. Ask: Can you make the payment? By when?
-            3. Answer ANY questions (policy, coverage, payment history, agent, etc).
-            4. If they give a payment date -> capture_promise_to_pay.
-            5. If they refuse or have a concern -> categorize_concern.
-            6. If they say partial / installment / half / EMI -> transition to partial_payment.
-            7. If they say call later / call back / busy -> transition to call_back.
-            """)
-
-        elif state == ConversationState.FEASIBILITY:
-            return base + self._state_tag("Payment Discussion", """
-            1. Listen to the user's payment response.
-            2. If they agree on a date -> capture_promise_to_pay.
-            3. If they refuse or raise a concern -> categorize_concern.
-            4. If they say partial / installment / half -> transition to partial_payment.
-            5. If they say call later / call back -> transition to call_back.
-            """)
-
-        elif state == ConversationState.PARTIAL_PAYMENT:
-            return base + self._state_tag("Partial Payment / EMI", """
-            1. Ask how much they can pay now.
-            2. Offer EMI: they can pay the rest in 2-3 installments.
-            3. Call capture_partial_payment tool with amount and EMI preference.
-            """)
-
-        elif state == ConversationState.CALL_BACK:
-            return base + self._state_tag("Call Back Scheduling", """
-            1. Ask when is a good time to call back.
-            2. Capture preferred date and time.
-            3. Call schedule_call_back tool with the preferred time.
-            """)
-
-        elif state == ConversationState.ESCALATION:
-            return base + self._state_tag("Escalation", """
-            1. Show empathy. Apologize for any inconvenience.
-            2. Say a senior team member will call them back.
-            3. Call request_escalation tool with the reason.
-            """)
-
-        elif state == ConversationState.CLOSING:
-            return base + self._state_tag("Closing", """
-            Politely say goodbye and end the call.
-            """)
-
-        return base
-
-    # ── State Transitions ─────────────────────────────────────────────────
-
     async def _transition_state(self, new_state: str):
         self.state = new_state
-        await self.update_instructions(Instructions(audio=self.get_instructions_for_state(self.state)))
-
-    # ── Tools: Identity ───────────────────────────────────────────────────
+        await self.update_instructions(compose_instructions_obj(self.state, self.metadata))
 
     @function_tool()
     async def confirm_right_party(self, context: RunContext) -> str:
@@ -232,8 +82,6 @@ class RenewalAssistant(Agent):
         self.outcome["disposition"] = "Alternate Number Captured" if alternate_number_provided else "Wrong Number"
         await self._transition_state(ConversationState.CLOSING)
         return "Apologize politely and say goodbye."
-
-    # ── Tools: Payment ────────────────────────────────────────────────────
 
     @function_tool()
     async def capture_promise_to_pay(self, context: RunContext, expected_date: str) -> str:
@@ -252,8 +100,6 @@ class RenewalAssistant(Agent):
         await self._transition_state(ConversationState.CLOSING)
         return "Concern noted. Show empathy, say the team will follow up, and say goodbye."
 
-    # ── Tools: Partial Payment / EMI ──────────────────────────────────────
-
     @function_tool()
     async def capture_partial_payment(self, context: RunContext, partial_amount: str, emi_option: str = None) -> str:
         logger.info(f"capture_partial_payment — amount={partial_amount}, emi={emi_option}")
@@ -263,8 +109,6 @@ class RenewalAssistant(Agent):
         await self._transition_state(ConversationState.CLOSING)
         return "Partial payment arranged. Confirm with the user and say goodbye."
 
-    # ── Tools: Call Back Scheduling ───────────────────────────────────────
-
     @function_tool()
     async def schedule_call_back(self, context: RunContext, preferred_time: str) -> str:
         logger.info(f"schedule_call_back — time={preferred_time}")
@@ -273,8 +117,6 @@ class RenewalAssistant(Agent):
         await self._transition_state(ConversationState.CLOSING)
         return f"Call back scheduled for {preferred_time}. Confirm with the user and say goodbye."
 
-    # ── Tools: Escalation ─────────────────────────────────────────────────
-
     @function_tool()
     async def request_escalation(self, context: RunContext, reason: str) -> str:
         logger.info(f"request_escalation — reason={reason}")
@@ -282,8 +124,6 @@ class RenewalAssistant(Agent):
         self.outcome["concern_notes"] = reason
         await self._transition_state(ConversationState.CLOSING)
         return "Escalation noted. Show empathy, say a senior team member will call back within 24 hours, and say goodbye."
-
-    # ── Tools: Detection ──────────────────────────────────────────────────
 
     @function_tool()
     async def detect_sentiment(self, context: RunContext, sentiment: str) -> str:
@@ -298,7 +138,6 @@ class RenewalAssistant(Agent):
         return f"Customer language recorded as {language}."
 
 
-# ── Server Setup ─────────────────────────────────────────────────────────────
 server = AgentServer(
     ws_url=os.getenv("LIVEKIT_URL"),
     api_key=os.getenv("LIVEKIT_API_KEY"),
@@ -307,7 +146,6 @@ server = AgentServer(
     setup_fnc=_prewarm_setup,
 )
 
-# ── Timing ───────────────────────────────────────────────────────────────────
 _roundtrip_times = deque(maxlen=20)
 
 
@@ -338,7 +176,6 @@ async def my_agent(ctx: agents.JobContext):
 
     logger.info(f"Customer: {metadata.get('name')}, mobile={metadata.get('mobile_number')}")
 
-    # ── AI Pipeline ───────────────────────────────────────────────────────
     deepgram_stt = deepgram.STT(
         model=os.getenv("PRIMARY_STT_MODEL", "nova-3"),
         language=os.getenv("PRIMARY_STT_LANGUAGE", "multi"),
@@ -350,42 +187,62 @@ async def my_agent(ctx: agents.JobContext):
         api_key=os.getenv("OPENAI_API_KEY"),
     )
 
-    tts_model = sarvam.TTS(
-        model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
-        speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
-        target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
-        pace=float(os.getenv("TTS_PACE", "1.2")),
-        temperature=0.5,
-        min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
-        max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
-        api_key=os.getenv("SARVAM_API_KEY"),
-    )
+    tts_provider = os.getenv("TTS_PROVIDER", "sarvam")
+
+    if tts_provider == "elevenlabs":
+        elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
+        if not elevenlabs_key:
+            raise RuntimeError("ELEVENLABS_API_KEY not set in .env")
+        tts_model = elevenlabs.TTS(
+            model=os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
+            voice_id=os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            api_key=elevenlabs_key,
+        )
+        logger.info(f"TTS: using ElevenLabs (voice_id={os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')})")
+    else:
+        tts_model = sarvam.TTS(
+            model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
+            speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
+            target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
+            pace=float(os.getenv("TTS_PACE", "1.2")),
+            temperature=0.5,
+            min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
+            max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
+            api_key=os.getenv("SARVAM_API_KEY"),
+        )
+        logger.info("TTS: using Sarvam Bulbul v3")
 
     vad_model = silero.VAD.load()
     tts_model.prewarm()
     logger.info("AI pipeline ready (STT + LLM + TTS + VAD, prewarmed)")
 
-    # ── AMD State (Answering Machine Detection) ───────────────────────────
     amd = {"human_detected": False, "should_end": False}
 
-    # ── Session ───────────────────────────────────────────────────────────
     try:
         session = AgentSession(
             stt=deepgram_stt,
             llm=openai_llm,
             tts=tts_model,
             vad=vad_model,
-            turn_detection="stt",
-            preemptive_generation=True,
-            min_endpointing_delay=float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
-            max_endpointing_delay=float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
-            min_interruption_duration=float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
+            turn_handling={
+                "turn_detection": "stt",
+                "endpointing": {
+                    "min_delay": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
+                    "max_delay": float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
+                },
+                "interruption": {
+                    "mode": "vad",
+                    "min_duration": float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
+                },
+                "preemptive_generation": {
+                    "enabled": True,
+                },
+            },
         )
 
         assistant = RenewalAssistant(metadata=metadata)
         logger.info(f"Assistant created (state={assistant.state})")
 
-        # ── Timing + AMD Listeners ────────────────────────────────────────
         _timing = {"user_stopped": 0, "agent_thinking": 0, "agent_speaking": 0}
 
         def on_user_state(ev):
@@ -433,7 +290,6 @@ async def my_agent(ctx: agents.JobContext):
         logger.error(traceback.format_exc())
         return
 
-    # ── Greeting ──────────────────────────────────────────────────────────
     name = metadata.get("name", "Customer")
     greeting_text = f"नमस्ते, मैं रिन्यूअल टीम से प्रिया बोल रही हूँ। क्या मेरी बात {name} जी से हो रही है?"
     t0 = time.time()
@@ -443,7 +299,6 @@ async def my_agent(ctx: agents.JobContext):
     except Exception as e:
         logger.error(f"say() failed: {e}")
 
-    # ── AMD Monitor ───────────────────────────────────────────────────────
     async def _amd_monitor():
         await asyncio.sleep(6)
         if not amd["human_detected"]:
@@ -453,7 +308,6 @@ async def my_agent(ctx: agents.JobContext):
 
     amd_task = asyncio.create_task(_amd_monitor())
 
-    # ── Wait for call to end ──────────────────────────────────────────────
     logger.info("Waiting for call to end...")
     try:
         while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
@@ -472,7 +326,6 @@ async def my_agent(ctx: agents.JobContext):
     avg_rt = sum(_roundtrip_times) / len(_roundtrip_times) if _roundtrip_times else 0
     logger.info(f"[TIMING] AVG round-trip: {avg_rt:.2f}s over {len(_roundtrip_times)} turns")
 
-    # ── Build Transcript ──────────────────────────────────────────────────
     raw_transcript = ""
     try:
         msgs = list(assistant.chat_ctx.messages()) if assistant.chat_ctx else []
@@ -492,10 +345,8 @@ async def my_agent(ctx: agents.JobContext):
     safe_transcript = re.sub(r'\+?\b\d{10,12}\b', "[REDACTED]", raw_transcript)
     safe_transcript = re.sub(r'\bPOL-\d+\b', "[REDACTED]", safe_transcript)
 
-    # ── Recording URL (from env if available) ─────────────────────────────
     recording_url = os.getenv("LIVEKIT_RECORDING_URL", "")
 
-    # ── Log Call ──────────────────────────────────────────────────────────
     try:
         await db_logger.log_call(
             customer_name=metadata.get("name"),
