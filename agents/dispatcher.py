@@ -11,6 +11,7 @@ OUTCOME_DEFAULTS = {
     "emi_option": None,
     "call_back_time": None,
     "recording_consent": None,
+    "reprompt_count": 0,
 }
 
 
