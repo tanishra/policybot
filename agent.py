@@ -10,6 +10,7 @@ import os
 import socket
 import asyncio
 from collections import deque
+from dataclasses import dataclass
 
 # Patch heartbeat BEFORE any livekit import to prevent LB idle timeout
 import livekit.agents.worker as _lk_worker
@@ -60,15 +61,34 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 
+@dataclass
+class AgentTrace:
+    agent_name: str
+    latency_ms: float
+    confidence: float | None = None
+    output: str = ""
+    timestamp: float = 0.0
+
+
 class RenewalAssistant(Agent):
     def __init__(self, metadata: dict, **kwargs) -> None:
         self.metadata = metadata
         self.state = ConversationState.INTRO
         self.outcome = create_outcome()
+        self._agent_traces: list[AgentTrace] = []
         super().__init__(
             instructions=compose_instructions_obj(ConversationState.INTRO, metadata),
             **kwargs
         )
+
+    def _record_trace(self, agent_name: str, latency_ms: float, confidence: float | None, output: str):
+        self._agent_traces.append(AgentTrace(
+            agent_name=agent_name,
+            latency_ms=latency_ms,
+            confidence=confidence,
+            output=output,
+            timestamp=time.time(),
+        ))
 
     async def _transition_state(self, new_state: str):
         self.state = new_state
@@ -76,44 +96,61 @@ class RenewalAssistant(Agent):
 
     @function_tool()
     async def confirm_right_party(self, context: RunContext) -> str:
+        t0 = time.time()
         logger.info(f"confirm_right_party — {self.metadata.get('name')} confirmed")
         await self._transition_state(ConversationState.CONSENT)
-        return "Identity confirmed. Ask for recording consent before sharing policy details."
+        result = "Identity confirmed. Ask for recording consent before sharing policy details."
+        self._record_trace("rpc", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def grant_recording_consent(self, context: RunContext) -> str:
+        t0 = time.time()
         logger.info("grant_recording_consent — consent given")
         self.outcome["recording_consent"] = "Yes"
         await self._transition_state(ConversationState.NARRATION)
-        return f"Recording consent granted. Share policy details with {self.metadata.get('name')}."
+        result = f"Recording consent granted. Share policy details with {self.metadata.get('name')}."
+        self._record_trace("consent", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def deny_recording_consent(self, context: RunContext) -> str:
+        t0 = time.time()
         logger.info("deny_recording_consent — consent denied")
         self.outcome["recording_consent"] = "No"
         self.outcome["disposition"] = "Consent Denied"
         await self._transition_state(ConversationState.CLOSING)
-        return "Recording consent denied. Politely say goodbye and end the call."
+        result = "Recording consent denied. Politely say goodbye and end the call."
+        self._record_trace("consent", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def fail_right_party(self, context: RunContext, alternate_number_provided: str = None) -> str:
+        t0 = time.time()
         logger.info(f"fail_right_party — wrong number for {self.metadata.get('name')}")
         if alternate_number_provided:
             self.outcome["alt_number"] = alternate_number_provided
-        self.outcome["disposition"] = "Alternate Number Captured" if alternate_number_provided else "Wrong Number"
+        disp = "Alternate Number Captured" if alternate_number_provided else "Wrong Number"
+        self.outcome["disposition"] = disp
         await self._transition_state(ConversationState.CLOSING)
-        return "Apologize politely and say goodbye."
+        result = "Apologize politely and say goodbye."
+        self._record_trace("rpc", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def capture_promise_to_pay(self, context: RunContext, expected_date: str) -> str:
+        t0 = time.time()
         logger.info(f"capture_promise_to_pay — date={expected_date}")
         self.outcome["disposition"] = "Promise to Pay"
         self.outcome["ptp_date"] = expected_date
         await self._transition_state(ConversationState.CLOSING)
-        return f"Payment date '{expected_date}' recorded. Say you are sending payment link via WhatsApp and say goodbye."
+        result = f"Payment date '{expected_date}' recorded. Say you are sending payment link via WhatsApp and say goodbye."
+        self._record_trace("ptp", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def categorize_concern(self, context: RunContext, concern_category: ConcernCategory, user_quote: str, confidence: float = 1.0) -> str:
+        t0 = time.time()
         coerced_cat, coerced_conf = coerce_concern_category(concern_category, confidence, user_quote)
         logger.info(f"categorize_concern — category={concern_category} confidence={confidence} -> coerced={coerced_cat}")
         self.outcome["disposition"] = "Concern Captured"
@@ -121,47 +158,65 @@ class RenewalAssistant(Agent):
         self.outcome["concern_confidence"] = coerced_conf
         self.outcome["concern_notes"] = user_quote
         await self._transition_state(ConversationState.CLOSING)
-        return "Concern noted. Show empathy, say the team will follow up, and say goodbye."
+        result = "Concern noted. Show empathy, say the team will follow up, and say goodbye."
+        self._record_trace("concern", (time.time() - t0) * 1000, coerced_conf, f"{coerced_cat}: {user_quote}")
+        return result
 
     @function_tool()
     async def capture_partial_payment(self, context: RunContext, partial_amount: str, emi_option: str = None) -> str:
+        t0 = time.time()
         logger.info(f"capture_partial_payment — amount={partial_amount}, emi={emi_option}")
         self.outcome["disposition"] = "Partial Payment Arranged"
         self.outcome["partial_amount"] = partial_amount
         self.outcome["emi_option"] = emi_option or "None"
         await self._transition_state(ConversationState.CLOSING)
-        return "Partial payment arranged. Confirm with the user and say goodbye."
+        result = "Partial payment arranged. Confirm with the user and say goodbye."
+        self._record_trace("partial", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def schedule_call_back(self, context: RunContext, preferred_time: str) -> str:
+        t0 = time.time()
         logger.info(f"schedule_call_back — time={preferred_time}")
         self.outcome["disposition"] = "Call Back Scheduled"
         self.outcome["call_back_time"] = preferred_time
         await self._transition_state(ConversationState.CLOSING)
-        return f"Call back scheduled for {preferred_time}. Confirm with the user and say goodbye."
+        result = f"Call back scheduled for {preferred_time}. Confirm with the user and say goodbye."
+        self._record_trace("callback", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def request_escalation(self, context: RunContext, reason: str) -> str:
+        t0 = time.time()
         logger.info(f"request_escalation — reason={reason}")
         self.outcome["disposition"] = "Escalated"
         self.outcome["concern_notes"] = reason
         await self._transition_state(ConversationState.CLOSING)
-        return "Escalation noted. Show empathy, say a senior team member will call back within 24 hours, and say goodbye."
+        result = "Escalation noted. Show empathy, say a senior team member will call back within 24 hours, and say goodbye."
+        self._record_trace("escalation", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def detect_sentiment(self, context: RunContext, sentiment: str) -> str:
+        t0 = time.time()
         logger.info(f"detect_sentiment — {sentiment}")
         self.outcome["sentiment"] = sentiment
-        return f"Customer sentiment recorded as {sentiment}."
+        result = f"Customer sentiment recorded as {sentiment}."
+        self._record_trace("sentiment", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def detect_language(self, context: RunContext, language: str) -> str:
+        t0 = time.time()
         logger.info(f"detect_language — {language}")
         self.outcome["detected_language"] = language
-        return f"Customer language recorded as {language}."
+        result = f"Customer language recorded as {language}."
+        self._record_trace("language", (time.time() - t0) * 1000, None, result)
+        return result
 
     @function_tool()
     async def mark_ambiguous(self, context: RunContext, attempt: int = 1) -> str:
+        t0 = time.time()
         logger.info(f"[INTENT] ambiguous, reprompt {attempt}")
         self.outcome["disposition"] = "Ambiguous"
         self.outcome["reprompt_count"] = attempt
@@ -169,9 +224,13 @@ class RenewalAssistant(Agent):
             self.outcome["concern_cat"] = "Other"
             self.outcome["concern_notes"] = "Ambiguous response after reprompt"
             await self._transition_state(ConversationState.CLOSING)
-            return "Say goodbye politely. The customer was unclear after two attempts."
+            result = "Say goodbye politely. The customer was unclear after two attempts."
+            self._record_trace("intent", (time.time() - t0) * 1000, None, result)
+            return result
         await self._transition_state(ConversationState.AMBIGUOUS)
-        return "Customer response was unclear. Say: I didn't quite catch that. By when would you be able to make the payment?"
+        result = "Customer response was unclear. Say: I didn't quite catch that. By when would you be able to make the payment?"
+        self._record_trace("intent", (time.time() - t0) * 1000, None, result)
+        return result
 
 
 server = AgentServer(
@@ -400,6 +459,9 @@ async def my_agent(ctx: agents.JobContext):
 
     avg_rt = sum(_roundtrip_times) / len(_roundtrip_times) if _roundtrip_times else 0
     logger.info(f"[TIMING] AVG round-trip: {avg_rt:.2f}s over {len(_roundtrip_times)} turns")
+    sorted_times = sorted(_roundtrip_times)
+    p95 = sorted_times[int(len(sorted_times) * 0.95)] if sorted_times else 0
+    logger.info(f"[TIMING] P95 latency: {p95:.2f}s over {len(_roundtrip_times)} turns")
     logger.info(f"[COMPLIANCE] Violations: {compliance_violations}")
 
     raw_transcript = ""
@@ -436,6 +498,15 @@ async def my_agent(ctx: agents.JobContext):
 
     recording_url = os.getenv("LIVEKIT_RECORDING_URL", "")
 
+    agent_trace_json = json.dumps(
+        [t.__dict__ for t in assistant._agent_traces],
+        indent=2, default=str,
+    ) if assistant._agent_traces else ""
+    assistant.outcome["agent_trace"] = agent_trace_json
+    logger.info(f"[TRACE] {len(assistant._agent_traces)} trace entries collected")
+    if _roundtrip_times:
+        logger.info(f"[TIMING] P95 latency: {p95:.2f}s (from {len(_roundtrip_times)} samples)")
+
     try:
         await db_logger.log_call(
             customer_name=metadata.get("name"),
@@ -457,6 +528,7 @@ async def my_agent(ctx: agents.JobContext):
             transcript=safe_transcript,
             recording_consent=assistant.outcome.get("recording_consent"),
             recording_url=recording_url,
+            agent_trace=agent_trace_json,
         )
         logger.info("Call record saved")
     except Exception as e:

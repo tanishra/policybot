@@ -12,6 +12,7 @@ OUTCOME_DEFAULTS = {
     "call_back_time": None,
     "recording_consent": None,
     "reprompt_count": 0,
+    "agent_trace": None,
 }
 
 
