@@ -16,6 +16,7 @@ MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN emi_option TEXT",
     "ALTER TABLE call_logs ADD COLUMN call_back_time TEXT",
     "ALTER TABLE call_logs ADD COLUMN recording_consent TEXT",
+    "ALTER TABLE call_logs ADD COLUMN agent_trace TEXT",
 ]
 
 
@@ -46,6 +47,7 @@ def _sync_init():
             call_back_time TEXT,
             transcript TEXT,
             recording_consent TEXT,
+            agent_trace TEXT,
             recording_url TEXT
         )
     """)
