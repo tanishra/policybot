@@ -160,6 +160,19 @@ class RenewalAssistant(Agent):
         self.outcome["detected_language"] = language
         return f"Customer language recorded as {language}."
 
+    @function_tool()
+    async def mark_ambiguous(self, context: RunContext, attempt: int = 1) -> str:
+        logger.info(f"[INTENT] ambiguous, reprompt {attempt}")
+        self.outcome["disposition"] = "Ambiguous"
+        self.outcome["reprompt_count"] = attempt
+        if attempt >= 2:
+            self.outcome["concern_cat"] = "Other"
+            self.outcome["concern_notes"] = "Ambiguous response after reprompt"
+            await self._transition_state(ConversationState.CLOSING)
+            return "Say goodbye politely. The customer was unclear after two attempts."
+        await self._transition_state(ConversationState.AMBIGUOUS)
+        return "Customer response was unclear. Say: I didn't quite catch that. By when would you be able to make the payment?"
+
 
 server = AgentServer(
     ws_url=os.getenv("LIVEKIT_URL"),

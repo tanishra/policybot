@@ -118,6 +118,22 @@ def build_escalation_instructions() -> str:
     """
 
 
+def build_ambiguous_instructions() -> str:
+    return """
+    CURRENT STATE: Ambiguous Response — Reprompt
+
+    YOUR JOB:
+    1. The customer's previous response was unclear or ambiguous.
+    2. You have already asked: "I didn't quite catch that. By when would you be able to make the payment?"
+    3. Listen carefully to their response this time.
+    4. If they give a clear answer (date, amount, concern, callback request):
+       - Route to the appropriate path (capture_promise_to_pay, categorize_concern, etc.)
+    5. If they are still unclear or avoidant:
+       - Call mark_ambiguous(attempt=2) to log and close the call.
+    6. Do NOT reprompt more than once.
+    """
+
+
 def build_closing_instructions() -> str:
     return """
     CURRENT STATE: Closing

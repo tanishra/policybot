@@ -7,6 +7,7 @@ from .intent import build_intent_instructions
 from .concern import (
     build_concern_instructions,
     build_consent_instructions,
+    build_ambiguous_instructions,
     build_partial_payment_instructions,
     build_call_back_instructions,
     build_escalation_instructions,
@@ -58,6 +59,7 @@ STATE_BUILDERS = {
     ConversationState.INTRO: lambda: build_rpc_instructions(),
     ConversationState.CONSENT: lambda: build_consent_instructions(),
     ConversationState.NARRATION: lambda: build_narration_instructions() + build_concern_instructions(),
+    ConversationState.AMBIGUOUS: lambda: build_ambiguous_instructions(),
     ConversationState.FEASIBILITY: lambda: build_intent_instructions() + build_concern_instructions(),
     ConversationState.PARTIAL_PAYMENT: lambda: build_partial_payment_instructions(),
     ConversationState.CALL_BACK: lambda: build_call_back_instructions(),
