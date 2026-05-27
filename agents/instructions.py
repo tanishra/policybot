@@ -68,12 +68,15 @@ STATE_BUILDERS = {
 }
 
 
-def compose_instructions(state: str, metadata: dict) -> str:
+def compose_instructions(state: str, metadata: dict, disposition: str = None) -> str:
     base = build_common_blocks(metadata)
-    state_builder = STATE_BUILDERS.get(state, lambda: "")
+    if state == ConversationState.CLOSING:
+        state_builder = lambda: build_closing_instructions(disposition)
+    else:
+        state_builder = STATE_BUILDERS.get(state, lambda: "")
     return base + state_builder()
 
 
-def compose_instructions_obj(state: str, metadata: dict) -> Instructions:
-    text = compose_instructions(state, metadata)
+def compose_instructions_obj(state: str, metadata: dict, disposition: str = None) -> Instructions:
+    text = compose_instructions(state, metadata, disposition=disposition)
     return Instructions(audio=text)

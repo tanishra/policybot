@@ -134,10 +134,26 @@ def build_ambiguous_instructions() -> str:
     """
 
 
-def build_closing_instructions() -> str:
-    return """
+def build_closing_instructions(disposition: str = None) -> str:
+    templates = {
+        "Promise to Pay": "Thank you for confirming. We are sending you the payment link shortly.",
+        "Concern Captured": "Thank you for sharing your concern. Our team will review and get back to you with an appropriate resolution. Have a good day.",
+        "Wrong Number": "I apologize for the inconvenience. Have a good day.",
+        "Alternate Number Captured": "Thank you for providing the alternate number. We will try reaching them. Have a good day.",
+        "Call Failed": "We will try reaching you again later. Thank you. Have a good day.",
+        "No Response": "We were unable to reach you. We will try again later. Thank you.",
+    }
+    msg = templates.get(disposition, "Thank you for your time. Have a good day.")
+    return f"""
     CURRENT STATE: Closing
 
     YOUR JOB:
-    Politely say goodbye and end the call.
+    1. You are ending the call.
+    2. Speak exactly this closing message: "{msg}"
+    3. Say it in the language the customer used (Hindi / Hinglish / English). Rephrase it if needed to match their language, keeping the exact meaning:
+       - Promise to Pay (Hindi): "पुष्टि करने के लिए धन्यवाद। हम जल्द ही आपको भुगतान लिंक भेज रहे हैं।"
+       - Concern Captured (Hindi): "अपनी चिंता साझा करने के लिए धन्यवाद। हमारी टीम इसकी समीक्षा करेगी और उचित समाधान के साथ आपसे संपर्क करेगी। आपका दिन शुभ हो।"
+       - Wrong Number (Hindi): "असुविधा के लिए मैं क्षमा चाहती हूँ। आपका दिन शुभ हो।"
+       - Alternate Number Captured (Hindi): "वैकल्पिक नंबर प्रदान करने के लिए धन्यवाद। हम उनसे संपर्क करने का प्रयास करेंगे। आपका दिन शुभ हो।"
+    4. Say goodbye and stop speaking. Do NOT ask any more questions.
     """

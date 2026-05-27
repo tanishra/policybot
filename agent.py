@@ -170,7 +170,8 @@ class RenewalAssistant(Agent):
 
     async def _transition_state(self, new_state: str):
         self.state = new_state
-        await self.update_instructions(compose_instructions_obj(self.state, self.metadata))
+        disp = self.outcome.get("disposition")
+        await self.update_instructions(compose_instructions_obj(self.state, self.metadata, disposition=disp))
 
     @function_tool()
     async def confirm_right_party(self, context: RunContext) -> str:
