@@ -304,242 +304,330 @@ async def my_agent(ctx: agents.JobContext):
     room_name = ctx.room.name
     logger.info(f"AGENT DISPATCHED to room: {room_name}")
 
-    try:
-        participant = await ctx.wait_for_participant()
-        logger.info(f"Participant joined: identity={participant.identity}")
-    except Exception as e:
-        logger.error(f"Failed waiting for participant: {e}")
-        return
-
     metadata = {}
-    if participant.metadata:
-        try:
-            metadata = json.loads(participant.metadata)
-            logger.info(f"Metadata: {json.dumps(metadata)}")
-        except json.JSONDecodeError:
-            logger.error("Failed to parse metadata")
-
-    if not metadata:
-        logger.error("No metadata, skipping call.")
-        return
-
-    logger.info(f"Customer: {metadata.get('name')}, mobile={metadata.get('mobile_number')}")
-
-    deepgram_stt = deepgram.STT(
-        model=os.getenv("PRIMARY_STT_MODEL", "nova-3"),
-        language=os.getenv("PRIMARY_STT_LANGUAGE", "multi"),
-        api_key=os.getenv("DEEPGRAM_API_KEY"),
-    )
-
-    openai_llm = openai.LLM(
-        model=os.getenv("PRIMARY_LLM_MODEL", "gpt-4o-mini"),
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
-
-    tts_model = _init_tts()
-    vad_model = silero.VAD.load()
-    tts_model.prewarm()
-    logger.info("AI pipeline ready (STT + LLM + TTS + VAD, prewarmed)")
-
-    amd = {"human_detected": False, "should_end": False}
+    disposition = "No Response"  # Default
+    call_status = "Failed"       # Default to Failed until session successfully completes
     compliance_violations = 0
+    duration = 0
+    recording_url = ""
+    safe_transcript = ""
+    safe_concern_notes = ""
+    agent_trace_json = ""
+    p95 = 0
+
+    # Parse metadata from Job Dispatch Metadata if available (Production Grade Fail-Safe)
+    if ctx.job.metadata:
+        try:
+            metadata = json.loads(ctx.job.metadata)
+            logger.info(f"Metadata pre-loaded from job: {json.dumps(metadata)}")
+        except Exception:
+            logger.warning("Failed to parse job metadata on startup")
 
     try:
-        session = AgentSession(
-            stt=deepgram_stt,
-            llm=openai_llm,
-            tts=tts_model,
-            vad=vad_model,
-            turn_handling={
-                "turn_detection": "stt",
-                "endpointing": {
-                    "min_delay": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
-                    "max_delay": float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
+        # 1. Wait for participant with timeout/error catching
+        try:
+            participant = await ctx.wait_for_participant()
+            logger.info(f"Participant joined: identity={participant.identity}")
+            # Overlay/update metadata from participant if available
+            if participant.metadata:
+                try:
+                    p_meta = json.loads(participant.metadata)
+                    metadata.update(p_meta)
+                    logger.info(f"Metadata updated from participant: {json.dumps(metadata)}")
+                except Exception:
+                    logger.warning("Failed to parse participant metadata")
+        except Exception as e:
+            logger.error(f"Failed waiting for participant: {e}")
+            disposition = "Call Failed"
+            call_status = "Failed"
+            return  # Exits, but goes to the finally block to write to DB!
+
+        if not metadata:
+            logger.error("No metadata found, skipping call.")
+            disposition = "Call Failed"
+            call_status = "Failed"
+            return
+
+        logger.info(f"Customer: {metadata.get('name')}, mobile={metadata.get('mobile_number')}")
+
+        # 2. Pipeline setup
+        try:
+            deepgram_stt = deepgram.STT(
+                model=os.getenv("PRIMARY_STT_MODEL", "nova-3"),
+                language=os.getenv("PRIMARY_STT_LANGUAGE", "multi"),
+                api_key=os.getenv("DEEPGRAM_API_KEY"),
+            )
+
+            openai_llm = openai.LLM(
+                model=os.getenv("PRIMARY_LLM_MODEL", "gpt-4o-mini"),
+                api_key=os.getenv("OPENAI_API_KEY"),
+            )
+
+            tts_model = _init_tts()
+            vad_model = silero.VAD.load()
+            tts_model.prewarm()
+            logger.info("AI pipeline ready (STT + LLM + TTS + VAD, prewarmed)")
+        except Exception as e:
+            logger.error(f"Pipeline initialization failed: {e}")
+            disposition = "Call Failed"
+            call_status = "Failed"
+            return
+
+        amd = {"human_detected": False, "should_end": False}
+        user_engaged = False  # Track if user has stopped speaking at least once
+
+        # 3. Initialize Agent Session
+        try:
+            session = AgentSession(
+                stt=deepgram_stt,
+                llm=openai_llm,
+                tts=tts_model,
+                vad=vad_model,
+                turn_handling={
+                    "turn_detection": "stt",
+                    "endpointing": {
+                        "min_delay": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.4")),
+                        "max_delay": float(os.getenv("MAX_ENDPOINTING_DELAY", "0.8")),
+                    },
+                    "interruption": {
+                        "mode": "vad",
+                        "min_duration": float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
+                    },
+                    "preemptive_generation": {
+                        "enabled": True,
+                    },
                 },
-                "interruption": {
-                    "mode": "vad",
-                    "min_duration": float(os.getenv("MIN_INTERRUPTION_DURATION", "0.3")),
-                },
-                "preemptive_generation": {
-                    "enabled": True,
-                },
-            },
+            )
+
+            assistant = RenewalAssistant(metadata=metadata)
+            assistant.outcome["disposition"] = "No Response"  # Default
+            logger.info(f"Assistant created (state={assistant.state})")
+
+            _timing = {"user_stopped": 0, "agent_thinking": 0, "agent_speaking": 0}
+
+            def on_user_state(ev):
+                if ev.new_state == "speaking":
+                    amd["human_detected"] = True
+                if ev.new_state == "listening" and ev.old_state == "speaking":
+                    _timing["user_stopped"] = time.time()
+                    nonlocal user_engaged
+                    user_engaged = True
+                    logger.info(f"[TIMING] user_stopped_speaking t={_timing['user_stopped']:.3f}")
+
+            def on_agent_state(ev):
+                t = time.time()
+                key = None
+                if ev.new_state == "thinking":
+                    _timing["agent_thinking"] = t
+                    key = "AGENT_STARTED_THINKING"
+                elif ev.new_state == "speaking":
+                    _timing["agent_speaking"] = t
+                    key = "AGENT_STARTED_SPEAKING"
+                elif ev.new_state == "listening" and ev.old_state == "speaking":
+                    key = "AGENT_FINISHED_SPEAKING"
+
+                if key:
+                    logger.info(f"[TIMING] {key} t={t:.3f}")
+
+                if _timing["agent_speaking"] and _timing["user_stopped"] and _timing["agent_thinking"]:
+                    if _timing["agent_speaking"] > _timing["agent_thinking"] > _timing["user_stopped"]:
+                        endpoint = _timing["agent_thinking"] - _timing["user_stopped"]
+                        process = _timing["agent_speaking"] - _timing["agent_thinking"]
+                        total = _timing["agent_speaking"] - _timing["user_stopped"]
+                        logger.info(f"[TIMING] ROUND-TRIP: endpointing={endpoint:.2f}s processing={process:.2f}s total={total:.2f}s")
+                        _roundtrip_times.append(total)
+                    _timing["user_stopped"] = 0
+                    _timing["agent_thinking"] = 0
+                    _timing["agent_speaking"] = 0
+
+            session.on("user_state_changed", on_user_state)
+            session.on("agent_state_changed", on_agent_state)
+
+            await session.start(room=ctx.room, agent=assistant)
+            logger.info("Session started")
+
+        except Exception as e:
+            logger.error(f"Session start failed: {e}")
+            disposition = "Call Failed"
+            call_status = "Failed"
+            return
+
+        # 4. Speak compliance-safe greeting
+        name = metadata.get("name", "Customer")
+        greeting_text = (
+            f"नमस्ते, मैं Fairvalue Insuretech प्राइवेट लिमिटेड की तरफ से "
+            f"आपकी इंश्योरेंस पॉलिसी रिन्यूअल के बारे में बात कर रही हूँ। "
+            f"क्या मेरी बात {name} जी से हो रही है?"
         )
+        t0 = time.time()
+        passed, violation, safe_text = compliance_check(greeting_text)
+        if not passed:
+            compliance_violations += 1
+            logger.warning(f"[COMPLIANCE] Greeting violation: {violation}")
+        try:
+            await session.say(text=safe_text, allow_interruptions=True)
+            logger.info(f"[TIMING] Greeting sent in {time.time() - t0:.2f}s")
+        except Exception as e:
+            logger.error(f"say() failed: {e}")
+            disposition = "Call Failed"
+            call_status = "Failed"
+            return
 
-        assistant = RenewalAssistant(metadata=metadata)
-        logger.info(f"Assistant created (state={assistant.state})")
+        # 5. Monitors for AMD (Answering Machine Detection) and No Response
+        async def _amd_monitor():
+            await asyncio.sleep(6)
+            if not amd["human_detected"] and assistant.outcome["disposition"] == "No Response":
+                logger.info("AMD: No human speech in 6s — Call Failed (Voicemail/Busy)")
+                assistant.outcome["disposition"] = "Call Failed"
+                amd["should_end"] = True
 
-        _timing = {"user_stopped": 0, "agent_thinking": 0, "agent_speaking": 0}
+        async def _no_response_monitor():
+            # Wait 10 seconds for user engagement (user stopped speaking at least once)
+            await asyncio.sleep(10)
+            if not user_engaged and assistant.outcome["disposition"] == "No Response":
+                logger.info("No Response: Customer did not engage/stopped speaking within 10s")
+                assistant.outcome["disposition"] = "No Response"
+                amd["should_end"] = True
 
-        def on_user_state(ev):
-            if ev.new_state == "speaking":
-                amd["human_detected"] = True
-            if ev.new_state == "listening" and ev.old_state == "speaking":
-                _timing["user_stopped"] = time.time()
-                logger.info(f"[TIMING] user_stopped_speaking t={_timing['user_stopped']:.3f}")
+        amd_task = asyncio.create_task(_amd_monitor())
+        no_response_task = asyncio.create_task(_no_response_monitor())
 
-        def on_agent_state(ev):
-            t = time.time()
-            key = None
-            if ev.new_state == "thinking":
-                _timing["agent_thinking"] = t
-                key = "AGENT_STARTED_THINKING"
-            elif ev.new_state == "speaking":
-                _timing["agent_speaking"] = t
-                key = "AGENT_STARTED_SPEAKING"
-            elif ev.new_state == "listening" and ev.old_state == "speaking":
-                key = "AGENT_FINISHED_SPEAKING"
+        logger.info("Waiting for call to end...")
+        try:
+            while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+                if amd["should_end"]:
+                    logger.info("AMD / No Response triggered — ending call")
+                    break
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"Room wait error: {e}")
+            disposition = "Call Failed"
+            call_status = "Failed"
+        finally:
+            amd_task.cancel()
+            no_response_task.cancel()
 
-            if key:
-                logger.info(f"[TIMING] {key} t={t:.3f}")
+        call_status = "Completed"
+        disposition = assistant.outcome.get("disposition", "No Response")
 
-            if _timing["agent_speaking"] and _timing["user_stopped"] and _timing["agent_thinking"]:
-                if _timing["agent_speaking"] > _timing["agent_thinking"] > _timing["user_stopped"]:
-                    endpoint = _timing["agent_thinking"] - _timing["user_stopped"]
-                    process = _timing["agent_speaking"] - _timing["agent_thinking"]
-                    total = _timing["agent_speaking"] - _timing["user_stopped"]
-                    logger.info(f"[TIMING] ROUND-TRIP: endpointing={endpoint:.2f}s processing={process:.2f}s total={total:.2f}s")
-                    _roundtrip_times.append(total)
-                _timing["user_stopped"] = 0
-                _timing["agent_thinking"] = 0
-                _timing["agent_speaking"] = 0
+        # 6. Capture final analytics & traces
+        avg_rt = sum(_roundtrip_times) / len(_roundtrip_times) if _roundtrip_times else 0
+        logger.info(f"[TIMING] AVG round-trip: {avg_rt:.2f}s over {len(_roundtrip_times)} turns")
+        sorted_times = sorted(_roundtrip_times)
+        p95 = sorted_times[int(len(sorted_times) * 0.95)] if sorted_times else 0
+        logger.info(f"[TIMING] P95 latency: {p95:.2f}s over {len(_roundtrip_times)} turns")
+        logger.info(f"[COMPLIANCE] Violations: {compliance_violations}")
 
-        session.on("user_state_changed", on_user_state)
-        session.on("agent_state_changed", on_agent_state)
+        raw_transcript = ""
+        try:
+            msgs = list(assistant.chat_ctx.messages()) if assistant.chat_ctx else []
+            for msg in msgs:
+                try:
+                    r = str(getattr(msg, "role", "")).upper()
+                    c = str(getattr(msg, "content", ""))
+                    if r == "USER":
+                        raw_transcript += f"Customer: {c}\n"
+                    elif r == "ASSISTANT":
+                        raw_transcript += f"Priya: {c}\n"
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Transcript build error: {e}")
 
-        await session.start(room=ctx.room, agent=assistant)
-        logger.info("Session started")
+        PII_PATTERNS = [
+            (r'\+?\b\d{10,12}\b', "[REDACTED]"),              # phone numbers
+            (r'\bPOL-\d+\b', "[REDACTED]"),                    # policy numbers
+            (r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', "[REDACTED]"),     # PAN
+            (r'\b\d{4}\s?\d{4}\s?\d{4}\b', "[REDACTED]"),     # Aadhaar
+            (r'\b\d{9,18}\b', "[REDACTED]"),                   # bank accounts
+        ]
 
-    except Exception as e:
-        logger.error(f"Session init failed: {e}")
+        def redact_pii(text: str) -> str:
+            for pattern, replacement in PII_PATTERNS:
+                text = re.sub(pattern, replacement, text)
+            return text
+
+        safe_transcript = redact_pii(raw_transcript)
+        safe_concern_notes = redact_pii(assistant.outcome.get("concern_notes") or "")
+
+        recording_url = os.getenv("LIVEKIT_RECORDING_URL", "")
+
+        agent_trace_json = json.dumps(
+            [t.__dict__ for t in assistant._agent_traces],
+            indent=2, default=str,
+        ) if assistant._agent_traces else ""
+        assistant.outcome["agent_trace"] = agent_trace_json
+        logger.info(f"[TRACE] {len(assistant._agent_traces)} trace entries collected")
+        if _roundtrip_times:
+            logger.info(f"[TIMING] P95 latency: {p95:.2f}s (from {len(_roundtrip_times)} samples)")
+
+    except Exception as outer_e:
+        logger.error(f"Unhandled exception in my_agent: {outer_e}")
+        disposition = "Call Failed"
+        call_status = "Failed"
         import traceback
         logger.error(traceback.format_exc())
-        return
 
-    name = metadata.get("name", "Customer")
-    greeting_text = (
-        f"नमस्ते, मैं Fairvalue Insuretech प्राइवेट लिमिटेड की तरफ से "
-        f"आपकी इंश्योरेंस पॉलिसी रिन्यूअल के बारे में बात कर रही हूँ। "
-        f"क्या मेरी बात {name} जी से हो रही है?"
-    )
-    t0 = time.time()
-    passed, violation, safe_text = compliance_check(greeting_text)
-    if not passed:
-        compliance_violations += 1
-        logger.warning(f"[COMPLIANCE] Greeting violation: {violation}")
-    try:
-        await session.say(text=safe_text, allow_interruptions=True)
-        logger.info(f"[TIMING] Greeting sent in {time.time() - t0:.2f}s")
-    except Exception as e:
-        logger.error(f"say() failed: {e}")
-
-    async def _amd_monitor():
-        await asyncio.sleep(6)
-        if not amd["human_detected"]:
-            logger.info("AMD: No human speech in 6s — voicemail assumed")
-            assistant.outcome["disposition"] = "Voicemail"
-            amd["should_end"] = True
-
-    amd_task = asyncio.create_task(_amd_monitor())
-
-    logger.info("Waiting for call to end...")
-    try:
-        while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
-            if amd["should_end"]:
-                logger.info("AMD triggered — ending call")
-                break
-            await asyncio.sleep(0.5)
-    except Exception as e:
-        logger.warning(f"Room wait error: {e}")
     finally:
-        amd_task.cancel()
+        # Write log record to DB in the finally block (guarantees execution for all success/fail paths)
+        duration = int(time.time() - start_time)
+        logger.info(f"Finalizing call log: status={call_status}, disposition={disposition}, duration={duration}s")
+        try:
+            # Safely fetch fields in case assistant or outcome wasn't fully initialized
+            ptp_date = None
+            concern_cat = None
+            concern_confidence = None
+            alt_number = None
+            detected_language = None
+            sentiment = None
+            partial_amount = None
+            emi_option = None
+            call_back_time = None
+            recording_consent = None
 
-    duration = int(time.time() - start_time)
-    logger.info(f"Call ended. Duration: {duration}s")
+            if 'assistant' in locals() and hasattr(assistant, 'outcome'):
+                ptp_date = assistant.outcome.get("ptp_date")
+                concern_cat = assistant.outcome.get("concern_cat")
+                concern_confidence = assistant.outcome.get("concern_confidence")
+                alt_number = assistant.outcome.get("alt_number")
+                detected_language = assistant.outcome.get("detected_language")
+                sentiment = assistant.outcome.get("sentiment")
+                partial_amount = assistant.outcome.get("partial_amount")
+                emi_option = assistant.outcome.get("emi_option")
+                call_back_time = assistant.outcome.get("call_back_time")
+                recording_consent = assistant.outcome.get("recording_consent")
 
-    avg_rt = sum(_roundtrip_times) / len(_roundtrip_times) if _roundtrip_times else 0
-    logger.info(f"[TIMING] AVG round-trip: {avg_rt:.2f}s over {len(_roundtrip_times)} turns")
-    sorted_times = sorted(_roundtrip_times)
-    p95 = sorted_times[int(len(sorted_times) * 0.95)] if sorted_times else 0
-    logger.info(f"[TIMING] P95 latency: {p95:.2f}s over {len(_roundtrip_times)} turns")
-    logger.info(f"[COMPLIANCE] Violations: {compliance_violations}")
+            await db_logger.log_call(
+                customer_name=metadata.get("name", "Customer"),
+                mobile_number=metadata.get("mobile_number"),
+                policy_number=metadata.get("policy_number"),
+                call_status=call_status,
+                duration=duration,
+                disposition=disposition,
+                promise_to_pay_date=ptp_date,
+                concern_category=concern_cat,
+                concern_confidence=concern_confidence,
+                concern_notes=safe_concern_notes,
+                alt_number=alt_number,
+                detected_language=detected_language,
+                sentiment=sentiment,
+                partial_amount=partial_amount,
+                emi_option=emi_option,
+                call_back_time=call_back_time,
+                transcript=safe_transcript,
+                recording_consent=recording_consent,
+                recording_url=recording_url,
+                agent_trace=agent_trace_json,
+            )
+            logger.info("Call record successfully written to database via finally block.")
+        except Exception as db_e:
+            logger.error(f"Failed writing database log in finally: {db_e}")
 
-    raw_transcript = ""
-    try:
-        msgs = list(assistant.chat_ctx.messages()) if assistant.chat_ctx else []
-        for msg in msgs:
-            try:
-                r = str(getattr(msg, "role", "")).upper()
-                c = str(getattr(msg, "content", ""))
-                if r == "USER":
-                    raw_transcript += f"Customer: {c}\n"
-                elif r == "ASSISTANT":
-                    raw_transcript += f"Priya: {c}\n"
-            except Exception:
-                pass
-    except Exception as e:
-        logger.error(f"Transcript build error: {e}")
-
-    PII_PATTERNS = [
-        (r'\+?\b\d{10,12}\b', "[REDACTED]"),              # phone numbers
-        (r'\bPOL-\d+\b', "[REDACTED]"),                    # policy numbers
-        (r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', "[REDACTED]"),     # PAN
-        (r'\b\d{4}\s?\d{4}\s?\d{4}\b', "[REDACTED]"),     # Aadhaar
-        (r'\b\d{9,18}\b', "[REDACTED]"),                   # bank accounts
-    ]
-
-    def redact_pii(text: str) -> str:
-        for pattern, replacement in PII_PATTERNS:
-            text = re.sub(pattern, replacement, text)
-        return text
-
-    safe_transcript = redact_pii(raw_transcript)
-    safe_concern_notes = redact_pii(assistant.outcome.get("concern_notes") or "")
-
-    recording_url = os.getenv("LIVEKIT_RECORDING_URL", "")
-
-    agent_trace_json = json.dumps(
-        [t.__dict__ for t in assistant._agent_traces],
-        indent=2, default=str,
-    ) if assistant._agent_traces else ""
-    assistant.outcome["agent_trace"] = agent_trace_json
-    logger.info(f"[TRACE] {len(assistant._agent_traces)} trace entries collected")
-    if _roundtrip_times:
-        logger.info(f"[TIMING] P95 latency: {p95:.2f}s (from {len(_roundtrip_times)} samples)")
-
-    try:
-        await db_logger.log_call(
-            customer_name=metadata.get("name"),
-            mobile_number=metadata.get("mobile_number"),
-            policy_number=metadata.get("policy_number"),
-            call_status="Completed",
-            duration=duration,
-            disposition=assistant.outcome["disposition"],
-            promise_to_pay_date=assistant.outcome["ptp_date"],
-            concern_category=assistant.outcome["concern_cat"],
-            concern_confidence=assistant.outcome["concern_confidence"],
-            concern_notes=safe_concern_notes,
-            alt_number=assistant.outcome["alt_number"],
-            detected_language=assistant.outcome["detected_language"],
-            sentiment=assistant.outcome["sentiment"],
-            partial_amount=assistant.outcome["partial_amount"],
-            emi_option=assistant.outcome["emi_option"],
-            call_back_time=assistant.outcome["call_back_time"],
-            transcript=safe_transcript,
-            recording_consent=assistant.outcome.get("recording_consent"),
-            recording_url=recording_url,
-            agent_trace=agent_trace_json,
-        )
-        logger.info("Call record saved")
-    except Exception as e:
-        logger.error(f"Failed to save call record: {e}")
-
-    logger.info(f"SESSION ENDED for {room_name} ({duration}s)")
-
-    try:
-        await ctx.shutdown()
-    except Exception:
-        pass
+        logger.info(f"SESSION ENDED for {room_name} ({duration}s)")
+        try:
+            await ctx.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

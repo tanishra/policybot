@@ -17,6 +17,10 @@ MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN call_back_time TEXT",
     "ALTER TABLE call_logs ADD COLUMN recording_consent TEXT",
     "ALTER TABLE call_logs ADD COLUMN agent_trace TEXT",
+    "ALTER TABLE call_logs ADD COLUMN alt_number TEXT",
+    "ALTER TABLE call_logs ADD COLUMN detected_language TEXT",
+    "ALTER TABLE call_logs ADD COLUMN sentiment TEXT",
+    "ALTER TABLE call_logs ADD COLUMN recording_url TEXT",
 ]
 
 
