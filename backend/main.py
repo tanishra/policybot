@@ -19,6 +19,7 @@ import certifi
 from dotenv import load_dotenv
 from livekit import api
 import logging
+import sqlite3
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -396,6 +397,145 @@ async def delete_call(call_id: str):
         raise HTTPException(status_code=404, detail="Call not found")
     del CALLS_STORE[call_id]
     return {"message": "Call deleted successfully"}
+
+class SuccessMetrics(BaseModel):
+    total_dialed: int
+    connect_rate: float
+    rpc_success_rate: float
+    ptp_capture_rate: float
+    avg_call_duration: float
+    compliance_violations: int
+    period: str
+
+@app.get("/api/metrics", response_model=SuccessMetrics, dependencies=[Depends(verify_auth)])
+async def get_metrics():
+    db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dispositions.db"))
+    if not os.path.exists(db_path):
+        # Database does not exist yet (no calls dialed)
+        return SuccessMetrics(
+            total_dialed=0,
+            connect_rate=0.0,
+            rpc_success_rate=0.0,
+            ptp_capture_rate=0.0,
+            avg_call_duration=0.0,
+            compliance_violations=0,
+            period="No data"
+        )
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='call_logs'")
+        if not cursor.fetchone():
+            conn.close()
+            return SuccessMetrics(
+                total_dialed=0,
+                connect_rate=0.0,
+                rpc_success_rate=0.0,
+                ptp_capture_rate=0.0,
+                avg_call_duration=0.0,
+                compliance_violations=0,
+                period="No data"
+            )
+            
+        cursor.execute("SELECT timestamp, duration, disposition, agent_trace FROM call_logs")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        total_dialed = len(rows)
+        if total_dialed == 0:
+            return SuccessMetrics(
+                total_dialed=0,
+                connect_rate=0.0,
+                rpc_success_rate=0.0,
+                ptp_capture_rate=0.0,
+                avg_call_duration=0.0,
+                compliance_violations=0,
+                period="No data"
+            )
+            
+        connected_count = 0
+        rpc_success_count = 0
+        ptp_count = 0
+        total_duration = 0
+        compliance_violations = 0
+        timestamps = []
+        
+        rpc_success_dispositions = {
+            "Promise to Pay", 
+            "Concern Captured", 
+            "Partial Payment Arranged", 
+            "Call Back Scheduled", 
+            "Escalated", 
+            "Consent Denied"
+        }
+        
+        for row in rows:
+            ts = row["timestamp"]
+            dur = row["duration"] or 0
+            disp = row["disposition"] or ""
+            trace_json = row["agent_trace"] or ""
+            
+            if ts:
+                timestamps.append(ts)
+                
+            if dur > 0:
+                connected_count += 1
+                total_duration += dur
+                
+                if disp in rpc_success_dispositions:
+                    rpc_success_count += 1
+                else:
+                    if trace_json:
+                        try:
+                            traces = json.loads(trace_json)
+                            if any(isinstance(t, dict) and t.get("agent_name") == "rpc" for t in traces):
+                                rpc_success_count += 1
+                        except Exception:
+                            pass
+                            
+                if disp == "Promise to Pay":
+                    ptp_count += 1
+                    
+            if trace_json:
+                try:
+                    traces = json.loads(trace_json)
+                    for t in traces:
+                        if isinstance(t, dict) and t.get("agent_name") == "compliance":
+                            compliance_violations += 1
+                except Exception:
+                    pass
+                    
+        connect_rate = connected_count / total_dialed
+        rpc_success_rate = rpc_success_count / connected_count if connected_count > 0 else 0.0
+        ptp_capture_rate = ptp_count / rpc_success_count if rpc_success_count > 0 else 0.0
+        avg_call_duration = total_duration / connected_count if connected_count > 0 else 0.0
+        
+        if timestamps:
+            try:
+                min_ts = min(timestamps).split("T")[0]
+                max_ts = max(timestamps).split("T")[0]
+                period = f"{min_ts} to {max_ts}"
+            except Exception:
+                period = "Unknown"
+        else:
+            period = "Unknown"
+            
+        return SuccessMetrics(
+            total_dialed=total_dialed,
+            connect_rate=round(connect_rate, 4),
+            rpc_success_rate=round(rpc_success_rate, 4),
+            ptp_capture_rate=round(ptp_capture_rate, 4),
+            avg_call_duration=round(avg_call_duration, 2),
+            compliance_violations=compliance_violations,
+            period=period
+        )
+    except Exception as e:
+        logger.error(f"Error compiling metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Error compiling metrics: {str(e)}")
 
 @app.post("/api/webhook", dependencies=[Depends(verify_auth)])
 async def receive_webhook(payload: WebhookPayload):

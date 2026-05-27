@@ -542,6 +542,7 @@ async def my_agent(ctx: agents.JobContext):
         if not passed:
             compliance_violations += 1
             logger.warning(f"[COMPLIANCE] Greeting violation: {violation}")
+            assistant._record_trace("compliance", 0.0, None, f"Violation: {violation}")
         try:
             await session.say(text=safe_text, allow_interruptions=True)
             logger.info(f"[TIMING] Greeting sent in {time.time() - t0:.2f}s")
@@ -696,6 +697,14 @@ async def my_agent(ctx: agents.JobContext):
                 recording_consent=recording_consent,
                 recording_url=recording_url,
                 agent_trace=agent_trace_json,
+            )
+            # Standardized metrics log (Phase 7)
+            is_connected = duration > 0 and call_status != "Failed"
+            rpc_success = disposition in ("Promise to Pay", "Concern Captured", "Partial Payment Arranged", "Call Back Scheduled", "Escalated", "Consent Denied")
+            is_ptp = disposition == "Promise to Pay"
+            logger.info(
+                f"[METRICS] room={room_name} connected={is_connected} "
+                f"rpc_success={rpc_success} ptp={is_ptp} duration={duration}"
             )
             logger.info("Call record successfully written to database via finally block.")
         except Exception as db_e:
