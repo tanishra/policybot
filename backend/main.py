@@ -162,6 +162,47 @@ class WebhookPayload(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_DND_SET: set[str] = set()
+_DND_LAST_LOADED: float = 0.0
+
+def load_dnd_list() -> set[str]:
+    global _DND_SET, _DND_LAST_LOADED
+    path = os.getenv("DND_LIST_PATH", "dnd_list.csv")
+    if not os.path.exists(path):
+        # Fallback to parent directory relative to backend main.py
+        path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", path))
+    if not os.path.exists(path):
+        if _DND_LAST_LOADED == 0.0:
+            logger.warning(f"DND list file not found at {path}. Bypassing DND check.")
+            _DND_LAST_LOADED = 1.0
+        return _DND_SET
+    try:
+        mtime = os.path.getmtime(path)
+        if mtime > _DND_LAST_LOADED:
+            new_set = set()
+            with open(path, mode="r") as f:
+                for line in f:
+                    val = line.strip()
+                    if val and not val.lower().startswith(("mobile", "phone")):
+                        new_set.add(val)
+            _DND_SET = new_set
+            _DND_LAST_LOADED = mtime
+            logger.info(f"Loaded {len(_DND_SET)} DND numbers from {path}")
+    except Exception as e:
+        logger.error(f"Failed to load DND list: {e}")
+    return _DND_SET
+
+def is_in_dnd(mobile_number: str, dnd_set: set[str]) -> bool:
+    normalized = "".join(c for c in mobile_number if c.isdigit())
+    if len(normalized) < 10:
+        return False
+    last_10 = normalized[-10:]
+    for dnd_num in dnd_set:
+        dnd_norm = "".join(c for c in dnd_num if c.isdigit())
+        if len(dnd_norm) >= 10 and dnd_norm[-10:] == last_10:
+            return True
+    return False
+
 async def initiate_outbound_call(
     mobile_number: str,
     customer_data: dict
@@ -193,6 +234,32 @@ async def initiate_outbound_call(
     }
     metadata_str = json.dumps(metadata)
     logger.info(f"Call metadata: {json.dumps(metadata, indent=2)}")
+
+    # Perform DND check (Phase 8)
+    dnd_set = load_dnd_list()
+    if is_in_dnd(mobile_number, dnd_set):
+        logger.info(f"Skipping outbound call to {metadata['name']} ({mobile_number}) - DND Blocked")
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dispositions.db"))
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                INSERT INTO call_logs (timestamp, customer_name, mobile_number, policy_number, call_status, duration, disposition)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().isoformat(),
+                metadata["name"],
+                mobile_number,
+                metadata.get("policy_number"),
+                "Failed",
+                0,
+                "DND Blocked"
+            ))
+            conn.commit()
+            conn.close()
+            logger.info(f"[LOGGER] Logged DND Blocked call: {metadata['name']} -> DND Blocked")
+        except Exception as db_e:
+            logger.error(f"Failed to log DND Blocked outcome: {db_e}")
+        return call_id, room_name, "DND Blocked"
 
     try:
         lk_session = await _get_lk_session()

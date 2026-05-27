@@ -11,7 +11,34 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dialer")
 
-DND_LIST = ["+910000000000"]
+def load_dnd_list() -> set[str]:
+    path = os.getenv("DND_LIST_PATH", "dnd_list.csv")
+    dnd_set = set()
+    if not os.path.exists(path):
+        logger.warning(f"DND list file not found at {path}. Bypassing DND check.")
+        return dnd_set
+    try:
+        with open(path, mode="r") as f:
+            for line in f:
+                val = line.strip()
+                if val and not val.lower().startswith(("mobile", "phone")):
+                    dnd_set.add(val)
+        logger.info(f"Loaded {len(dnd_set)} DND numbers from {path}")
+    except Exception as e:
+        logger.error(f"Failed to load DND list: {e}")
+    return dnd_set
+
+def is_in_dnd(mobile_number: str, dnd_set: set[str]) -> bool:
+    normalized = "".join(c for c in mobile_number if c.isdigit())
+    if len(normalized) < 10:
+        return False
+    last_10 = normalized[-10:]
+    for dnd_num in dnd_set:
+        dnd_norm = "".join(c for c in dnd_num if c.isdigit())
+        if len(dnd_norm) >= 10 and dnd_norm[-10:] == last_10:
+            return True
+    return False
+
 MAX_RETRIES = 3
 RETRY_DELAYS = [10, 30, 60]
 NON_RETRYABLE_ERRORS = ["invalid", "not found", "unallocated", "disconnected"]
@@ -20,12 +47,12 @@ def is_retryable_error(error_msg: str) -> bool:
     error_lower = str(error_msg).lower()
     return not any(err in error_lower for err in NON_RETRYABLE_ERRORS)
 
-async def dial_customer(livekit_api, customer, sip_trunk_id, semaphore):
+async def dial_customer(livekit_api, customer, sip_trunk_id, dnd_set, semaphore):
     async with semaphore:
         mobile_number = customer.get('mobile_number', '')
         name = customer.get('customer_name', 'Unknown')
 
-        if mobile_number in DND_LIST:
+        if is_in_dnd(mobile_number, dnd_set):
             logger.info(f"Skipping {name} ({mobile_number}) - DND")
             await db_logger.log_call(
                 customer_name=name, mobile_number=mobile_number,
@@ -80,11 +107,12 @@ async def main():
 
     livekit_api = api.LiveKitAPI(url, api_key, api_secret)
     semaphore = asyncio.Semaphore(5)
+    dnd_set = load_dnd_list()
 
     logger.info("Starting Campaign dialing...")
     with open('campaign.csv', mode='r') as file:
         reader = csv.DictReader(file)
-        tasks = [dial_customer(livekit_api, row, sip_trunk_id, semaphore) for row in reader]
+        tasks = [dial_customer(livekit_api, row, sip_trunk_id, dnd_set, semaphore) for row in reader]
 
     await asyncio.gather(*tasks)
     logger.info("Campaign dispatch complete.")
