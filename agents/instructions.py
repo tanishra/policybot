@@ -68,15 +68,20 @@ STATE_BUILDERS = {
 }
 
 
-def compose_instructions(state: str, metadata: dict, disposition: str = None) -> str:
+def compose_instructions(state: str, metadata: dict, disposition: str = None, lang_config: dict = None) -> str:
     base = build_common_blocks(metadata)
     if state == ConversationState.CLOSING:
-        state_builder = lambda: build_closing_instructions(disposition)
+        state_builder = lambda: build_closing_instructions(disposition, lang_config)
+    elif state == ConversationState.CONSENT:
+        state_builder = lambda: build_consent_instructions(lang_config)
+    elif state == ConversationState.AMBIGUOUS:
+        state_builder = lambda: build_ambiguous_instructions(lang_config)
     else:
         state_builder = STATE_BUILDERS.get(state, lambda: "")
     return base + state_builder()
 
 
-def compose_instructions_obj(state: str, metadata: dict, disposition: str = None) -> Instructions:
-    text = compose_instructions(state, metadata, disposition=disposition)
+def compose_instructions_obj(state: str, metadata: dict, disposition: str = None, lang_config: dict = None) -> Instructions:
+    text = compose_instructions(state, metadata, disposition=disposition, lang_config=lang_config)
     return Instructions(audio=text)
+

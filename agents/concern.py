@@ -53,6 +53,14 @@ def build_concern_instructions() -> str:
     - If confidence is below {CONFIDENCE_THRESHOLD}, the system auto-classifies as "Other".
     - Show empathy before calling the tool.
 
+    YOUR CONCERN REPHRASING JOB (PRD §7.7, §7.8):
+    - When the user raises a concern, show empathy and ALWAYS rephrase their concern back to them to confirm you understood correctly before calling the categorize_concern tool.
+    - Use these exact confirmation phrasing structures based on the concern category:
+      * Financial Problem: "I understand you are currently facing financial difficulties. Is that correct?" (Hindi: "मैं समझ सकती हूँ कि आप वर्तमान में वित्तीय कठिनाइयों का सामना कर रहे हैं। क्या यह सही है?")
+      * Lower Returns: "I understand your concern is around the returns on this policy. Is that right?" (Hindi: "मैं समझ सकती हूँ कि आपकी चिंता इस पॉलिसी पर मिलने वाले रिटर्न के बारे में है। क्या यह सही है?")
+      * Wants to Surrender: "I understand you would like to discontinue and surrender this policy. Have I understood correctly?" (Hindi: "मैं समझ सकती हूँ कि आप इस पॉलिसी को बंद करके सरेंडर करना चाहते हैं। क्या मैंने सही समझा?")
+      * For other categories: Rephrase their concern concisely and end with a polite confirmation check (e.g., "...Is that right?").
+
     CONCERN TAXONOMY (use EXACT match):
 {taxonomy_bullets}
 
@@ -71,13 +79,17 @@ def build_concern_instructions() -> str:
     """
 
 
-def build_consent_instructions() -> str:
-    return """
+
+def build_consent_instructions(lang_config: dict = None) -> str:
+    consent_prompt = "This call is being recorded for quality and training purposes. Is that okay?"
+    if lang_config and "consent_prompt" in lang_config:
+        consent_prompt = lang_config["consent_prompt"]
+    return f"""
     CURRENT STATE: Recording Consent
 
     YOUR JOB:
     1. The user has confirmed their identity.
-    2. Ask: "This call is being recorded for quality and training purposes. Is that okay?"
+    2. Ask: "{consent_prompt}"
     3. Wait for their response.
     4. If they say YES (or equivalent) -> call grant_recording_consent tool.
     5. If they say NO (or equivalent) -> call deny_recording_consent tool.
@@ -118,13 +130,16 @@ def build_escalation_instructions() -> str:
     """
 
 
-def build_ambiguous_instructions() -> str:
-    return """
+def build_ambiguous_instructions(lang_config: dict = None) -> str:
+    reprompt = "I didn't quite catch that. By when would you be able to make the payment?"
+    if lang_config and "reprompt" in lang_config:
+        reprompt = lang_config["reprompt"]
+    return f"""
     CURRENT STATE: Ambiguous Response — Reprompt
 
     YOUR JOB:
     1. The customer's previous response was unclear or ambiguous.
-    2. You have already asked: "I didn't quite catch that. By when would you be able to make the payment?"
+    2. You have already asked: "{reprompt}"
     3. Listen carefully to their response this time.
     4. If they give a clear answer (date, amount, concern, callback request):
        - Route to the appropriate path (capture_promise_to_pay, categorize_concern, etc.)
@@ -134,7 +149,20 @@ def build_ambiguous_instructions() -> str:
     """
 
 
-def build_closing_instructions(disposition: str = None) -> str:
+def build_closing_instructions(disposition: str = None, lang_config: dict = None) -> str:
+    if lang_config and "closing_messages" in lang_config:
+        closing_messages = lang_config["closing_messages"]
+        msg = closing_messages.get(disposition, closing_messages.get("fallback", "Thank you for your time. Have a good day."))
+        return f"""
+        CURRENT STATE: Closing
+
+        YOUR JOB:
+        1. You are ending the call.
+        2. Speak exactly this closing message: "{msg}"
+        3. Say goodbye and stop speaking. Do NOT ask any more questions.
+        """
+    
+    # Backwards-compatible legacy fallback when lang_config is not supplied
     templates = {
         "Promise to Pay": "Thank you for confirming. We are sending you the payment link shortly.",
         "Concern Captured": "Thank you for sharing your concern. Our team will review and get back to you with an appropriate resolution. Have a good day.",
@@ -157,3 +185,5 @@ def build_closing_instructions(disposition: str = None) -> str:
        - Alternate Number Captured (Hindi): "वैकल्पिक नंबर प्रदान करने के लिए धन्यवाद। हम उनसे संपर्क करने का प्रयास करेंगे। आपका दिन शुभ हो।"
     4. Say goodbye and stop speaking. Do NOT ask any more questions.
     """
+
+

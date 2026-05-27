@@ -32,12 +32,16 @@ PolicyBot is an **intelligent voice agent** that makes automated outbound calls 
 |------------|--------|
 | **Outbound Dialing** | Calls policyholders via Twilio SIP trunk with automatic DND scrubbing and retry logic |
 | **Natural Conversation** | Speaks Hindi/English, understands mixed-language responses, adapts tone based on sentiment |
-| **State Machine** | Guides the call through: Identity Confirmation → Policy Narration → Payment Discussion → Closing |
+| **State Machine** | Guides the call through: Identity Confirmation → DPDP Consent → Policy Narration → Payment Discussion → Closing |
 | **Smart Outcomes** | Captures promise-to-pay dates, concerns, partial payment commitments, and call-back requests |
 | **Sentiment Awareness** | Detects angry/frustrated customers and escalates to human agent |
 | **WhatsApp Integration** | Sends payment links via WhatsApp when customer commits to pay |
 | **Full Transcripts** | Logs redacted transcripts, dispositions, and recordings to database |
-| **Campaign Mode** | Batch-dials hundreds of customers from CSV with configurable concurrency |
+| **Campaign Mode** | Batch-dials hundreds of customers from CSV with configurable concurrency and retry delays |
+| **Success Metrics API** | FastAPI metrics aggregation endpoint (`/api/metrics`) calculating Connect Rate, RPC success, and violations |
+| **DND Scrubbing** | Trailing 10-digit number scrubbing against hot-reloaded lists on modification times |
+| **Pluggable Languages** | Pluggable regional configurations for STT and TTS models/speakers and prompt templates |
+
 
 ---
 
@@ -84,14 +88,16 @@ graph TB
     end
 
     subgraph Conversation["3. Conversation State Machine"]
-        F --> I["INTRO<br/>'Namaste... kya aap {name} hain?'"]
+        F --> I["INTRO<br/>Greeting & Identity Check"]
         I --> J{"Identity confirmed?"}
-        J -->|"Yes → confirm_right_party()"| K["NARRATION<br/>Share policy details<br/>Ask about payment"]
-        J -->|"No → fail_right_party()"| L["CLOSING<br/>Apologize & end call"]
+        J -->|"Yes → confirm_right_party()"| C_DPDP["CONSENT<br/>DPDP Recording Consent check"]
+        C_DPDP -->|"Yes → grant_recording_consent()"| K["NARRATION<br/>Share policy details<br/>Ask about payment"]
+        C_DPDP -->|"No → deny_recording_consent()"| L["CLOSING<br/>Apologize & end call"]
+        J -->|"No → fail_right_party()"| L
         
         K --> M{"Customer response"}
-        M -->|"Promises to pay"| N["capture_promise_to_pay()<br/>→ Date recorded"]
-        M -->|"Has concern"| O["categorize_concern()<br/>→ Category + notes"]
+        M -->|"Promises to pay"| N["capture_promise_to_pay()<br/>→ Confirm and record Date"]
+        M -->|"Has concern"| O["categorize_concern()<br/>→ Empathy + Rephrase Objection"]
         M -->|"Partial / EMI"| P["capture_partial_payment()<br/>→ Amount + EMI option"]
         M -->|"Call me later"| Q["schedule_call_back()<br/>→ Preferred time"]
         M -->|"Angry / Frustrated"| R["request_escalation()<br/>→ Senior team callback"]
@@ -102,6 +108,7 @@ graph TB
         Q --> L
         R --> L
     end
+
 
     subgraph Outcome["4. Outcome"]
         L --> S["Call logged to database<br/>with redacted transcript"]
@@ -120,10 +127,12 @@ graph TB
 ```mermaid
 stateDiagram-v2
     [*] --> INTRO: Greeting said
-    INTRO --> NARRATION: confirm_right_party()
+    INTRO --> CONSENT: confirm_right_party()
     INTRO --> CLOSING: fail_right_party()
-    NARRATION --> CLOSING: capture_promise_to_pay()
-    NARRATION --> CLOSING: categorize_concern()
+    CONSENT --> NARRATION: grant_recording_consent()
+    CONSENT --> CLOSING: deny_recording_consent()
+    NARRATION --> CLOSING: capture_promise_to_pay() [Read Back Date]
+    NARRATION --> CLOSING: categorize_concern() [Rephrase Objection]
     NARRATION --> PARTIAL_PAYMENT: "partial/half/EMI"
     NARRATION --> CALL_BACK: "call later/busy"
     NARRATION --> ESCALATION: request_escalation() [angry]
@@ -131,6 +140,7 @@ stateDiagram-v2
     CALL_BACK --> CLOSING: schedule_call_back()
     ESCALATION --> CLOSING
     CLOSING --> [*]: Call ends → Logged
+
 ```
 
 ---
@@ -165,12 +175,20 @@ Customer Speech ──► Deepgram Nova-3 ──► OpenAI GPT-4o-mini ──►
 ```
 ├── agent.py                 # AI Voice Agent (LiveKit Agent + state machine)
 ├── logger.py                # Async SQLite call disposition logger
-├── dialer.py                # Campaign batch dialer
+├── dialer.py                # Campaign batch dialer (normalizer, retries)
 ├── customers.json           # Customer policy database
 ├── campaign.csv             # Sample campaign file
 │
+├── agents/                  # Multi-agent modular instruction prompts
+│   ├── languages.py         # Pluggable regional Indic language configurations
+│   ├── instructions.py      # Assembly of state instructions
+│   ├── concern.py           # Objection rephrasing, consent, closures
+│   ├── orchestrator.py      # Stateful conversation machine
+│   ├── compliance.py        # pre-TTS IRDAI disclosure checker
+│   └── dispatcher.py        # Webhook notifications & fallback templates
+│
 ├── backend/
-│   ├── main.py              # FastAPI REST API
+│   ├── main.py              # FastAPI REST API (Metrics, Webhooks, CRUD tracking)
 │   └── database.py          # PostgreSQL models (optional)
 │
 ├── ui/
@@ -179,6 +197,7 @@ Customer Speech ──► Deepgram Nova-3 ──► OpenAI GPT-4o-mini ──►
 ├── docker-compose.yml       # Multi-service deployment
 ├── .env.example             # Configuration template
 └── ARCHITECTURE.md          # Detailed architecture document
+
 ```
 
 ---
@@ -196,11 +215,15 @@ python agent.py dev
 # Backend (Terminal 2)
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
-# UI (Terminal 3)
+# UI (Terminal 3: Chainlit Chat)
 chainlit run ui/app.py --port 8001
+
+# Run Validation Test Suites
+for f in test_phase*.py; do python "$f"; done
 
 # Or all at once with Docker
 docker compose up -d --build
+
 ```
 
 ---

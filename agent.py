@@ -149,13 +149,17 @@ class AgentTrace:
 
 
 class RenewalAssistant(Agent):
-    def __init__(self, metadata: dict, **kwargs) -> None:
+    def __init__(self, metadata: dict, lang_code: str = None, **kwargs) -> None:
         self.metadata = metadata
+        self.lang_code = lang_code or metadata.get("language") or os.getenv("LANGUAGE") or "en-IN"
+        from agents.languages import get_language_config
+        self.lang_config = get_language_config(self.lang_code)
+        
         self.state = ConversationState.INTRO
         self.outcome = create_outcome()
         self._agent_traces: list[AgentTrace] = []
         super().__init__(
-            instructions=compose_instructions_obj(ConversationState.INTRO, metadata),
+            instructions=compose_instructions_obj(ConversationState.INTRO, metadata, lang_config=self.lang_config),
             **kwargs
         )
 
@@ -171,7 +175,8 @@ class RenewalAssistant(Agent):
     async def _transition_state(self, new_state: str):
         self.state = new_state
         disp = self.outcome.get("disposition")
-        await self.update_instructions(compose_instructions_obj(self.state, self.metadata, disposition=disp))
+        await self.update_instructions(compose_instructions_obj(self.state, self.metadata, disposition=disp, lang_config=self.lang_config))
+
 
     @function_tool()
     async def confirm_right_party(self, context: RunContext) -> str:
@@ -223,9 +228,10 @@ class RenewalAssistant(Agent):
         self.outcome["disposition"] = "Promise to Pay"
         self.outcome["ptp_date"] = expected_date
         await self._transition_state(ConversationState.CLOSING)
-        result = f"Payment date '{expected_date}' recorded. Say you are sending payment link via WhatsApp and say goodbye."
+        result = f"Payment date '{expected_date}' recorded. You MUST explicitly read back this date '{expected_date}' to the customer to confirm it (e.g., 'Just to confirm, you will be making the payment by {expected_date}, is that correct?'), say you are sending the payment link, and say goodbye."
         self._record_trace("ptp", (time.time() - t0) * 1000, None, result)
         return result
+
 
     @function_tool()
     async def categorize_concern(self, context: RunContext, concern_category: ConcernCategory, user_quote: str, confidence: float = 1.0) -> str:
@@ -307,9 +313,11 @@ class RenewalAssistant(Agent):
             self._record_trace("intent", (time.time() - t0) * 1000, None, result)
             return result
         await self._transition_state(ConversationState.AMBIGUOUS)
-        result = "Customer response was unclear. Say: I didn't quite catch that. By when would you be able to make the payment?"
+        reprompt_text = self.lang_config.get("reprompt", "I didn't quite catch that. By when would you be able to make the payment?")
+        result = f"Customer response was unclear. Say: {reprompt_text}"
         self._record_trace("intent", (time.time() - t0) * 1000, None, result)
         return result
+
 
 
 server = AgentServer(
@@ -324,7 +332,7 @@ server = AgentServer(
 _roundtrip_times = deque(maxlen=20)
 
 
-def _init_tts():
+def _init_tts(lang_config: dict = None):
     legacy = os.getenv("TTS_PROVIDER")
     fallback = os.getenv("TTS_FALLBACK")
     if legacy and not fallback:
@@ -337,17 +345,26 @@ def _init_tts():
         name = name.strip().lower()
         try:
             if name == "sarvam":
+                model = os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3")
+                speaker = os.getenv("PRIMARY_TTS_SPEAKER", "priya")
+                target_language_code = os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN")
+                
+                if lang_config:
+                    model = lang_config.get("tts_model", model)
+                    speaker = lang_config.get("tts_speaker", speaker)
+                    target_language_code = lang_config.get("tts_language_code", target_language_code)
+                
                 tts = sarvam.TTS(
-                    model=os.getenv("PRIMARY_TTS_MODEL", "bulbul:v3"),
-                    speaker=os.getenv("PRIMARY_TTS_SPEAKER", "priya"),
-                    target_language_code=os.getenv("PRIMARY_TTS_LANGUAGE", "en-IN"),
+                    model=model,
+                    speaker=speaker,
+                    target_language_code=target_language_code,
                     pace=float(os.getenv("TTS_PACE", "1.2")),
                     temperature=0.5,
                     min_buffer_size=int(os.getenv("TTS_MIN_BUFFER", "30")),
                     max_chunk_length=int(os.getenv("TTS_MAX_CHUNK", "50")),
                     api_key=os.getenv("SARVAM_API_KEY"),
                 )
-                logger.info("TTS: Sarvam Bulbul v3")
+                logger.info(f"TTS: Sarvam Bulbul v3 ({target_language_code})")
                 return tts
 
             elif name == "elevenlabs":
@@ -375,6 +392,7 @@ def _init_tts():
             errors.append(f"{name}: {e}")
 
     raise RuntimeError(f"No working TTS provider. Tried: {', '.join(order)}. Errors: {', '.join(errors)}")
+
 
 
 @server.rtc_session(agent_name="priya")
@@ -429,11 +447,15 @@ async def my_agent(ctx: agents.JobContext):
 
         logger.info(f"Customer: {metadata.get('name')}, mobile={metadata.get('mobile_number')}")
 
+        lang_code = metadata.get("language") or os.getenv("LANGUAGE") or "en-IN"
+        from agents.languages import get_language_config
+        lang_config = get_language_config(lang_code)
+
         # 2. Pipeline setup
         try:
             deepgram_stt = deepgram.STT(
                 model=os.getenv("PRIMARY_STT_MODEL", "nova-3"),
-                language=os.getenv("PRIMARY_STT_LANGUAGE", "multi"),
+                language=lang_config["stt_language"],
                 api_key=os.getenv("DEEPGRAM_API_KEY"),
             )
 
@@ -442,7 +464,7 @@ async def my_agent(ctx: agents.JobContext):
                 api_key=os.getenv("OPENAI_API_KEY"),
             )
 
-            tts_model = _init_tts()
+            tts_model = _init_tts(lang_config)
             vad_model = silero.VAD.load()
             tts_model.prewarm()
             logger.info("AI pipeline ready (STT + LLM + TTS + VAD, prewarmed)")
@@ -478,7 +500,7 @@ async def my_agent(ctx: agents.JobContext):
                 },
             )
 
-            assistant = RenewalAssistant(metadata=metadata)
+            assistant = RenewalAssistant(metadata=metadata, lang_code=lang_code)
             assistant.outcome["disposition"] = "No Response"  # Default
             logger.info(f"Assistant created (state={assistant.state})")
 
@@ -533,13 +555,10 @@ async def my_agent(ctx: agents.JobContext):
 
         # 4. Speak compliance-safe greeting
         name = metadata.get("name", "Customer")
-        greeting_text = (
-            f"नमस्ते, मैं Fairvalue Insuretech प्राइवेट लिमिटेड की तरफ से "
-            f"आपकी इंश्योरेंस पॉलिसी रिन्यूअल के बारे में बात कर रही हूँ। "
-            f"क्या मेरी बात {name} जी से हो रही है?"
-        )
+        greeting_text = lang_config["greeting"].format(name=name)
         t0 = time.time()
         passed, violation, safe_text = compliance_check(greeting_text)
+
         if not passed:
             compliance_violations += 1
             logger.warning(f"[COMPLIANCE] Greeting violation: {violation}")
