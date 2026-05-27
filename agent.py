@@ -1,6 +1,7 @@
 import certifi
 import ctypes
 import ctypes.util
+import sys
 from dotenv import load_dotenv
 import logging
 import json
@@ -12,6 +13,75 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass
 
+# Shim to fix the breaking change in opentelemetry-sdk 1.39+ / missing ReadWriteLogRecord in 1.34
+try:
+    from opentelemetry.sdk._logs import ReadWriteLogRecord
+except ImportError:
+    try:
+        from opentelemetry.sdk._logs._internal import ReadWriteLogRecord
+    except ImportError:
+        try:
+            from opentelemetry.sdk._logs import LogRecord
+            ReadWriteLogRecord = LogRecord
+        except ImportError:
+            class ReadWriteLogRecord: pass
+    try:
+        import opentelemetry.sdk._logs
+        opentelemetry.sdk._logs.ReadWriteLogRecord = ReadWriteLogRecord
+        sys.modules['opentelemetry.sdk._logs'].ReadWriteLogRecord = ReadWriteLogRecord
+    except Exception:
+        pass
+
+# Additional shim for ReadableLogRecord just in case
+try:
+    from opentelemetry.sdk._logs import ReadableLogRecord
+except ImportError:
+    try:
+        from opentelemetry.sdk._logs._internal import ReadableLogRecord
+    except ImportError:
+        try:
+            from opentelemetry.sdk._logs import LogRecord
+            ReadableLogRecord = LogRecord
+        except ImportError:
+            class ReadableLogRecord: pass
+    try:
+        import opentelemetry.sdk._logs
+        opentelemetry.sdk._logs.ReadableLogRecord = ReadableLogRecord
+        sys.modules['opentelemetry.sdk._logs'].ReadableLogRecord = ReadableLogRecord
+    except Exception:
+        pass
+
+# Monkey-patch Logger.emit on all classes to wrap 'body' keyword argument into a LogRecord
+try:
+    import opentelemetry._logs as otel_logs
+    import opentelemetry._logs._internal as otel_logs_internal
+    from opentelemetry._logs import LogRecord
+
+    try:
+        import opentelemetry.sdk._logs as otel_sdk_logs
+        sdk_logger_classes = [otel_sdk_logs.Logger]
+    except ImportError:
+        sdk_logger_classes = []
+
+    logger_classes = [
+        otel_logs.Logger,
+        otel_logs_internal.ProxyLogger,
+        otel_logs_internal.NoOpLogger,
+    ] + sdk_logger_classes
+
+    for cls in logger_classes:
+        if hasattr(cls, 'emit'):
+            original_emit = cls.emit
+            def make_wrap(o):
+                def wrap(self, *args, **kwargs):
+                    if 'body' in kwargs or (len(args) == 0 and len(kwargs) > 0):
+                        return o(self, LogRecord(**kwargs))
+                    return o(self, *args, **kwargs)
+                return wrap
+            cls.emit = make_wrap(original_emit)
+except Exception:
+    pass
+
 # Patch heartbeat BEFORE any livekit import to prevent LB idle timeout
 import livekit.agents.worker as _lk_worker
 _lk_worker.HEARTBEAT_INTERVAL = 15
@@ -19,6 +89,14 @@ _lk_worker.HEARTBEAT_INTERVAL = 15
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, function_tool, RunContext, JobProcess, JobExecutorType
 from livekit.plugins import silero, openai, deepgram, sarvam, elevenlabs
+
+# Monkey patch _MetadataLogProcessor to implement abstract method 'emit' in older opentelemetry-sdk versions
+try:
+    import livekit.agents.telemetry.traces as telemetry_traces
+    if not hasattr(telemetry_traces._MetadataLogProcessor, 'emit'):
+        telemetry_traces._MetadataLogProcessor.emit = lambda self, log_data: self.on_emit(log_data)
+except Exception:
+    pass
 
 import logger as db_logger
 from agents.orchestrator import ConversationState
